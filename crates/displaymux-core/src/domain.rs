@@ -52,12 +52,35 @@ fn normalize_identifier(value: &str) -> String {
     value.trim().to_ascii_uppercase()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorResolution {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl MonitorResolution {
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+
+    pub fn is_ultrawide(&self) -> bool {
+        if self.height == 0 {
+            return false;
+        }
+        (self.width as f64 / self.height as f64) >= 2.0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MonitorDescriptor {
     pub id: MonitorId,
     pub name: String,
     pub fingerprint: MonitorFingerprint,
     pub active: bool,
+    #[serde(default)]
+    pub max_resolution: Option<MonitorResolution>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +189,18 @@ mod tests {
     #[test]
     fn accepts_decimal_input_values() {
         assert_eq!(DisplayInput::parse_code("17").unwrap().value(), 0x11);
+    }
+
+    #[test]
+    fn identifies_ultrawide_resolutions() {
+        let ultrawide = MonitorResolution::new(3440, 1440);
+        assert!(ultrawide.is_ultrawide());
+
+        let standard = MonitorResolution::new(2560, 1440);
+        assert!(!standard.is_ultrawide());
+
+        let zero = MonitorResolution::new(1920, 0);
+        assert!(!zero.is_ultrawide());
     }
 }
 

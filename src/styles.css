@@ -246,6 +246,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 .showcase-title { font-size: 15px; font-weight: 800; color: var(--ink); }
 
+.showcase-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -258,18 +264,24 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   letter-spacing: 0.02em;
 }
 
-.curved-monitor-wrap {
+.status-badge.subtle {
+  background: #eef3f0;
+  color: #4b6357;
+}
+
+.flat-monitor-wrap {
   display: flex;
   justify-content: center;
   align-items: center;
   padding: 14px 0 10px;
 }
 
-.curved-monitor-svg {
-  width: 340px;
+.flat-monitor-svg {
+  width: 380px;
   max-width: 100%;
   height: auto;
   filter: drop-shadow(0 12px 24px rgba(18, 32, 26, 0.12));
+  transition: all 0.25s ease-in-out;
 }
 
 .showcase-info { text-align: center; margin-top: 4px; }
@@ -1220,7 +1232,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
   body { background: var(--canvas); }
   .topbar { background: rgba(19, 27, 23, 0.96); }
-  .curved-monitor-svg path[fill="#141e1a"] { fill: #0d1511; stroke: #1d2c25; }
+  .status-badge.subtle { background: #192821; color: #8fa59b; }
   .local-active-state { background: #162e24; border-color: #244d3c; color: #52c79b; }
   .field input { background: #1a2520; color: #e5ece8; border-color: #2d3e35; }
   .field input:disabled { background: #141c18; color: #6a7c74; }

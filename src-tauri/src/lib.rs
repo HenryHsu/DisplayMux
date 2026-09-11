@@ -30,6 +30,8 @@ const MIN_SHARED_KEY_LENGTH: usize = 8;
 struct SelectedMonitor {
     name: String,
     fingerprint: MonitorFingerprint,
+    #[serde(default)]
+    max_resolution: Option<displaymux_core::MonitorResolution>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +220,7 @@ fn select_monitor(monitor_id: String, state: State<'_, AppRuntime>) -> Result<Ap
     settings.shared_monitor = Some(SelectedMonitor {
         name: monitor.name,
         fingerprint: monitor.fingerprint,
+        max_resolution: monitor.max_resolution,
     });
     store_settings(&state, settings)
 }

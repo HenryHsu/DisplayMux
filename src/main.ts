@@ -9,6 +9,11 @@ import "./styles.css";
 
 type Platform = "windows" | "mac";
 
+interface MonitorResolution {
+  width: number;
+  height: number;
+}
+
 interface Fingerprint {
   manufacturer_id: string;
   product_code: string;
@@ -20,9 +25,14 @@ interface MonitorDescriptor {
   name: string;
   active: boolean;
   fingerprint: Fingerprint;
+  maxResolution?: MonitorResolution | null;
 }
 
-interface SelectedMonitor { name: string; fingerprint: Fingerprint; }
+interface SelectedMonitor {
+  name: string;
+  fingerprint: Fingerprint;
+  maxResolution?: MonitorResolution | null;
+}
 
 interface HostRoute {
   id: string;
@@ -128,38 +138,12 @@ app.innerHTML = `
         <div class="showcase-monitor-card">
           <div class="showcase-header">
             <span class="showcase-title">共用螢幕</span>
-            <span class="status-badge" id="screen-input">DDC/CI 已就緒</span>
+            <div class="showcase-badges">
+              <span class="status-badge subtle" id="screen-ratio">16:9</span>
+              <span class="status-badge" id="screen-input">DDC/CI 已就緒</span>
+            </div>
           </div>
-          <div class="curved-monitor-wrap">
-            <svg class="curved-monitor-svg" viewBox="0 0 340 180" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <defs>
-                <linearGradient id="screenGrad" x1="170" y1="28" x2="170" y2="124" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stop-color="#152b21"/>
-                  <stop offset="100%" stop-color="#0c1713"/>
-                </linearGradient>
-                <linearGradient id="glareGrad" x1="312" y1="30" x2="160" y2="120" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/>
-                  <stop offset="60%" stop-color="#ffffff" stop-opacity="0.04"/>
-                  <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-                </linearGradient>
-                <linearGradient id="standCol" x1="164" y1="116" x2="176" y2="116" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stop-color="#2a3832"/>
-                  <stop offset="50%" stop-color="#40534a"/>
-                  <stop offset="100%" stop-color="#222d28"/>
-                </linearGradient>
-              </defs>
-              <path d="M156 142L170 146L184 142L180 138H160L156 142Z" fill="#1b2420"/>
-              <path d="M164 116H176V148H164V116Z" fill="url(#standCol)"/>
-              <path d="M161 145H179L176 151H164L161 145Z" fill="#2d3b34"/>
-              <path d="M164 147L98 165C96 165.5 95 167 97 168L104 169L166 152V147H164Z" fill="#24302a"/>
-              <path d="M98 165L164 148L166 149L104 167L98 165Z" fill="#3b4b43"/>
-              <path d="M176 147L242 165C244 165.5 245 167 243 168L236 169L174 152V147H176Z" fill="#1f2a24"/>
-              <path d="M242 165L176 148L174 149L236 167L242 165Z" fill="#35443c"/>
-              <path d="M24 28C98 34 242 34 316 28L312 116C242 122 98 122 28 116L24 28Z" fill="#17221d" stroke="#2c3a33" stroke-width="2.5"/>
-              <path d="M27 30.5C99 36.5 241 36.5 313 30.5L309.5 113.5C239.5 119.5 100.5 119.5 30.5 113.5L27 30.5Z" fill="url(#screenGrad)"/>
-              <path d="M190 33.5C236 34 285 32 313 30.5L309.5 113.5C285 115 255 113 235 107L190 33.5Z" fill="url(#glareGrad)"/>
-            </svg>
-          </div>
+          <div class="flat-monitor-wrap" id="flat-monitor-wrap"></div>
           <div class="showcase-info">
             <strong class="showcase-monitor-name" id="shared-monitor-name">尚未選擇</strong>
             <p class="showcase-monitor-desc" id="monitor-status">以 EDID 製造商、產品碼與序號鎖定，不依顯示器排列順序。</p>
@@ -325,14 +309,115 @@ async function refresh(): Promise<void> {
   renderState();
 }
 
+function getFlatMonitorSvg(isUltrawide: boolean): string {
+  if (isUltrawide) {
+    return `<svg class="flat-monitor-svg" viewBox="0 0 380 190" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="screen21" x1="190" y1="18" x2="190" y2="144" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#142c22"/>
+          <stop offset="100%" stop-color="#0b1713"/>
+        </linearGradient>
+        <linearGradient id="glare21" x1="360" y1="20" x2="160" y2="140" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/>
+          <stop offset="45%" stop-color="#ffffff" stop-opacity="0.03"/>
+          <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+        </linearGradient>
+        <linearGradient id="standNeck" x1="182" y1="144" x2="198" y2="144" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#2a3a32"/>
+          <stop offset="50%" stop-color="#42574c"/>
+          <stop offset="100%" stop-color="#1e2a24"/>
+        </linearGradient>
+        <linearGradient id="standBase" x1="190" y1="172" x2="190" y2="180" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#3c5045"/>
+          <stop offset="100%" stop-color="#1a2520"/>
+        </linearGradient>
+      </defs>
+      <rect x="183" y="142" width="14" height="32" rx="2" fill="url(#standNeck)"/>
+      <rect x="177" y="132" width="26" height="18" rx="3" fill="#1b2520"/>
+      <rect x="125" y="172" width="130" height="7" rx="3.5" fill="url(#standBase)"/>
+      <rect x="126" y="172" width="128" height="1.5" rx="0.75" fill="#587363" opacity="0.6"/>
+      <rect x="16" y="16" width="348" height="130" rx="6" fill="#15211b" stroke="#2c3f34" stroke-width="2"/>
+      <rect x="20" y="20" width="340" height="122" rx="3" fill="url(#screen21)"/>
+      <polygon points="20,20 220,20 120,142 20,142" fill="url(#glare21)"/>
+      <circle cx="190" cy="142" r="1.5" fill="#4ade80" opacity="0.8"/>
+    </svg>`;
+  }
+  return `<svg class="flat-monitor-svg" viewBox="0 0 380 190" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="screen16" x1="190" y1="14" x2="190" y2="152" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#142c22"/>
+        <stop offset="100%" stop-color="#0b1713"/>
+      </linearGradient>
+      <linearGradient id="glare16" x1="320" y1="16" x2="160" y2="150" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/>
+        <stop offset="45%" stop-color="#ffffff" stop-opacity="0.03"/>
+        <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+      </linearGradient>
+      <linearGradient id="standNeck" x1="182" y1="144" x2="198" y2="144" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#2a3a32"/>
+        <stop offset="50%" stop-color="#42574c"/>
+        <stop offset="100%" stop-color="#1e2a24"/>
+      </linearGradient>
+      <linearGradient id="standBase" x1="190" y1="172" x2="190" y2="180" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="#3c5045"/>
+        <stop offset="100%" stop-color="#1a2520"/>
+      </linearGradient>
+    </defs>
+    <rect x="183" y="148" width="14" height="26" rx="2" fill="url(#standNeck)"/>
+    <rect x="177" y="138" width="26" height="18" rx="3" fill="#1b2520"/>
+    <rect x="135" y="172" width="110" height="7" rx="3.5" fill="url(#standBase)"/>
+    <rect x="136" y="172" width="108" height="1.5" rx="0.75" fill="#587363" opacity="0.6"/>
+    <rect x="65" y="12" width="250" height="144" rx="6" fill="#15211b" stroke="#2c3f34" stroke-width="2"/>
+    <rect x="69" y="16" width="242" height="136" rx="3" fill="url(#screen16)"/>
+    <polygon points="69,16 220,16 140,152 69,152" fill="url(#glare16)"/>
+    <circle cx="190" cy="152.5" r="1.5" fill="#4ade80" opacity="0.8"/>
+  </svg>`;
+}
+
 function renderState(): void {
+  let currentResolution: MonitorResolution | null = null;
   if (settings.sharedMonitor) {
     setText("#shared-monitor-name", settings.sharedMonitor.name);
     setText("#monitor-status", "");
+    currentResolution = settings.sharedMonitor.maxResolution ?? null;
+    if (!currentResolution) {
+      const match = dashboard.monitors.find((m) =>
+        sameFingerprint(m.fingerprint, settings.sharedMonitor!.fingerprint)
+      );
+      if (match?.maxResolution) {
+        currentResolution = match.maxResolution;
+      }
+    }
   } else {
     setText("#shared-monitor-name", "尚未選擇");
     setText("#monitor-status", dashboard.monitorStatus || "請在「螢幕與主機」設定頁選擇共用螢幕");
+    if (dashboard.monitors.length > 0 && dashboard.monitors[0].maxResolution) {
+      currentResolution = dashboard.monitors[0].maxResolution;
+    }
   }
+
+  const isUltrawide = Boolean(
+    currentResolution &&
+    currentResolution.height > 0 &&
+    (currentResolution.width / currentResolution.height) >= 2.0
+  );
+
+  const monitorWrap = document.querySelector("#flat-monitor-wrap");
+  if (monitorWrap) {
+    monitorWrap.innerHTML = getFlatMonitorSvg(isUltrawide);
+  }
+
+  const ratioBadge = document.querySelector("#screen-ratio");
+  if (ratioBadge) {
+    if (currentResolution) {
+      ratioBadge.textContent = isUltrawide
+        ? `21:9 · ${currentResolution.width}×${currentResolution.height}`
+        : `16:9 · ${currentResolution.width}×${currentResolution.height}`;
+    } else {
+      ratioBadge.textContent = isUltrawide ? "21:9" : "16:9";
+    }
+  }
+
   setText("#screen-input", dashboard.ddcAvailable ? "DDC/CI 已就緒" : "尚未就緒");
   setText("#monitor-health", dashboard.ddcAvailable ? "已鎖定" : "尚未就緒");
   setText("#peer-health", `${settings.peers.length} 台`);
@@ -363,12 +448,16 @@ function renderMonitors(): void {
     const selected = settings.sharedMonitor?.fingerprint;
     const isSelected = selected && sameFingerprint(selected, monitor.fingerprint);
     const fp = monitor.fingerprint;
+    const res = monitor.maxResolution;
+    const resText = res
+      ? `(${res.width}×${res.height} ${res.width / res.height >= 2.0 ? "21:9" : "16:9"})`
+      : "";
     return `<article class="monitor-card-item ${isSelected ? "is-selected" : ""}">
       <div class="monitor-item-left">
         <div class="monitor-item-icon"><i data-lucide="monitor"></i></div>
         <div class="monitor-identity">
           <strong>${escapeHtml(monitor.name)}</strong>
-          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? "無序號")} ${dashboard.ddcAvailable ? "(DDC/CI 已就緒)" : ""}</span>
+          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? "無序號")} ${resText} ${dashboard.ddcAvailable ? "(DDC/CI 已就緒)" : ""}</span>
         </div>
       </div>
       <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" ${isSelected ? "disabled" : ""}>

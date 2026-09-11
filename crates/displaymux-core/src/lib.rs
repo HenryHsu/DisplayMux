@@ -11,7 +11,7 @@ pub mod windows;
 
 pub use domain::{
     DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxProfile, MonitorDescriptor,
-    MonitorFingerprint, MonitorId, SwitchMode, SwitchOutcome,
+    MonitorFingerprint, MonitorId, MonitorResolution, SwitchMode, SwitchOutcome,
 };
 pub use error::DisplayMuxError;
 pub use network::{

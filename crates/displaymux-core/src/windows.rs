@@ -10,15 +10,16 @@ use windows_sys::Win32::{
     },
     Foundation::{LPARAM, RECT},
     Graphics::Gdi::{
-        EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW, HDC, HMONITOR,
-        MONITORINFOEXW,
+        EnumDisplayDevicesW, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, DEVMODEW,
+        DISPLAY_DEVICEW, HDC, HMONITOR, MONITORINFOEXW,
     },
     UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME,
 };
 use wmi::WMIConnection;
 
 use crate::{
-    DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint, MonitorId,
+    DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint,
+    MonitorId, MonitorResolution,
 };
 
 const INPUT_SOURCE_VCP_CODE: u8 = 0x60;
@@ -36,14 +37,14 @@ impl WindowsMonitorController {
         let mut native_monitors = Vec::new();
 
         for logical in logical_monitors {
-            let device_path = monitor_device_path(logical)?;
-            let identity = parse_device_path(&device_path)?;
+            let details = monitor_logical_details(logical)?;
+            let identity = parse_device_path(&details.device_path)?;
             let wmi_monitor = wmi_monitors
                 .get(&identity.wmi_instance_key)
                 .ok_or_else(|| {
                     DisplayMuxError::Backend(format!(
                         "無法取得 {} 的 EDID 序號；為避免誤控，已停止列舉",
-                        device_path
+                        details.device_path
                     ))
                 })?;
             let physical_monitors = physical_monitors(logical)?;
@@ -56,7 +57,7 @@ impl WindowsMonitorController {
                     .unwrap_or(description);
                 let id = MonitorId::new(format!(
                     "{}::physical:{index}",
-                    device_path.to_ascii_uppercase()
+                    details.device_path.to_ascii_uppercase()
                 ));
 
                 native_monitors.push(NativeMonitor {
@@ -69,6 +70,7 @@ impl WindowsMonitorController {
                             decode_edid_text(&wmi_monitor.serial_number_id),
                         ),
                         active: wmi_monitor.active,
+                        max_resolution: details.max_resolution,
                     },
                     handle: physical.hPhysicalMonitor,
                 });
@@ -232,7 +234,45 @@ fn wide_string(values: &[u16]) -> String {
     )
 }
 
-fn monitor_device_path(monitor: HMONITOR) -> Result<String, DisplayMuxError> {
+struct LogicalMonitorDetails {
+    device_path: String,
+    max_resolution: Option<MonitorResolution>,
+}
+
+fn monitor_max_resolution(device_name: &[u16]) -> Option<MonitorResolution> {
+    let mut mode_num = 0;
+    let mut devmode = DEVMODEW {
+        dmSize: size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+    let mut max_width = 0u32;
+    let mut max_height = 0u32;
+
+    loop {
+        // SAFETY: `device_name` is null-terminated UTF-16, `devmode` has `dmSize` initialized.
+        let ok = unsafe { EnumDisplaySettingsW(device_name.as_ptr(), mode_num, &mut devmode) };
+        if ok == 0 {
+            break;
+        }
+        let w = devmode.dmPelsWidth;
+        let h = devmode.dmPelsHeight;
+        let area = (w as u64) * (h as u64);
+        let current_max_area = (max_width as u64) * (max_height as u64);
+        if area > current_max_area || (area == current_max_area && w > max_width) {
+            max_width = w;
+            max_height = h;
+        }
+        mode_num += 1;
+    }
+
+    if max_width > 0 && max_height > 0 {
+        Some(MonitorResolution::new(max_width, max_height))
+    } else {
+        None
+    }
+}
+
+fn monitor_logical_details(monitor: HMONITOR) -> Result<LogicalMonitorDetails, DisplayMuxError> {
     let mut info = MONITORINFOEXW::default();
     info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
 
@@ -269,7 +309,12 @@ fn monitor_device_path(monitor: HMONITOR) -> Result<String, DisplayMuxError> {
         ));
     }
 
-    Ok(device_path)
+    let max_resolution = monitor_max_resolution(&info.szDevice);
+
+    Ok(LogicalMonitorDetails {
+        device_path,
+        max_resolution,
+    })
 }
 
 fn physical_monitors(monitor: HMONITOR) -> Result<Vec<PHYSICAL_MONITOR>, DisplayMuxError> {

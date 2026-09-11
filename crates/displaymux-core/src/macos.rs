@@ -2,7 +2,8 @@ use ddc::Ddc;
 use ddc_macos::Monitor;
 
 use crate::{
-    DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint, MonitorId,
+    DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint,
+    MonitorId, MonitorResolution,
 };
 
 const INPUT_SELECT_VCP_CODE: u8 = 0x60;
@@ -69,11 +70,13 @@ fn descriptor(monitor: &Monitor) -> Result<MonitorDescriptor, DisplayMuxError> {
         ))
     })?;
     let fingerprint = fingerprint_from_edid(&edid)?;
+    let max_resolution = resolution_from_edid(&edid);
     Ok(MonitorDescriptor {
         id: id_for(monitor),
         name: monitor.description(),
         fingerprint,
         active: true,
+        max_resolution,
     })
 }
 
@@ -120,6 +123,36 @@ fn backend_error(error: impl std::fmt::Display) -> DisplayMuxError {
     ))
 }
 
+fn resolution_from_edid(edid: &[u8]) -> Option<MonitorResolution> {
+    if edid.len() < 128 {
+        return None;
+    }
+
+    let mut max_res: Option<MonitorResolution> = None;
+
+    // Check Detailed Timing Descriptors in base EDID block (offsets 54, 72, 90, 108)
+    for offset in [54, 72, 90, 108] {
+        if offset + 18 > edid.len() {
+            break;
+        }
+        if edid[offset] != 0 || edid[offset + 1] != 0 {
+            let h_active = (((edid[offset + 4] as u32) & 0xF0) << 4) | (edid[offset + 2] as u32);
+            let v_active = (((edid[offset + 7] as u32) & 0xF0) << 4) | (edid[offset + 5] as u32);
+
+            if h_active > 0 && v_active > 0 {
+                let is_larger = max_res.map_or(true, |curr| {
+                    (h_active as u64 * v_active as u64) > (curr.width as u64 * curr.height as u64)
+                });
+                if is_larger {
+                    max_res = Some(MonitorResolution::new(h_active, v_active));
+                }
+            }
+        }
+    }
+
+    max_res
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +170,25 @@ mod tests {
         assert_eq!(fingerprint.manufacturer_id, "AUS");
         assert_eq!(fingerprint.product_code, "3554");
         assert_eq!(fingerprint.serial_number.as_deref(), Some("278504"));
+    }
+
+    #[test]
+    fn parses_edid_resolution_and_ultrawide() {
+        let mut edid = [0_u8; 128];
+        // DTD at offset 54: 3440 x 1440
+        // Pixel clock non-zero
+        edid[54] = 0x01;
+        edid[55] = 0x01;
+        // H active = 3440 = 0x0D70 -> lower 8 bits = 0x70, upper nibble = 0x0D
+        edid[56] = 0x70;
+        edid[58] = 0xD0; // upper 4 bits = 0xD
+                         // V active = 1440 = 0x05A0 -> lower 8 bits = 0xA0, upper nibble = 0x05
+        edid[59] = 0xA0;
+        edid[61] = 0x50; // upper 4 bits = 0x5
+
+        let res = resolution_from_edid(&edid).expect("resolution parsed");
+        assert_eq!(res.width, 3440);
+        assert_eq!(res.height, 1440);
+        assert!(res.is_ultrawide());
     }
 }
