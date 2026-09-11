@@ -27,11 +27,11 @@ impl Default for MacOsMonitorController {
 
 impl MonitorControl for MacOsMonitorController {
     fn enumerate(&self) -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
-        Monitor::enumerate()
+        Ok(Monitor::enumerate()
             .map_err(backend_error)?
             .into_iter()
             .map(|monitor| descriptor(&monitor))
-            .collect()
+            .collect())
     }
 
     fn read_input(&self, monitor_id: &MonitorId) -> Result<DisplayInput, DisplayMuxError> {
@@ -62,22 +62,39 @@ fn find_monitor(monitor_id: &MonitorId) -> Result<Monitor, DisplayMuxError> {
         .ok_or_else(|| DisplayMuxError::MonitorNoLongerAvailable(monitor_id.as_str().to_owned()))
 }
 
-fn descriptor(monitor: &Monitor) -> Result<MonitorDescriptor, DisplayMuxError> {
-    let edid = monitor.edid().ok_or_else(|| {
-        DisplayMuxError::Backend(format!(
-            "無法讀取 {} 的 EDID，為避免誤控已略過此顯示器",
-            monitor.description()
-        ))
-    })?;
-    let fingerprint = fingerprint_from_edid(&edid)?;
-    let max_resolution = resolution_from_edid(&edid);
-    Ok(MonitorDescriptor {
+fn descriptor(monitor: &Monitor) -> MonitorDescriptor {
+    let (fingerprint, max_resolution) = monitor
+        .edid()
+        .and_then(|edid| match fingerprint_from_edid(&edid) {
+            Ok(fingerprint) => Some((fingerprint, resolution_from_edid(&edid))),
+            Err(error) => {
+                tracing::warn!(
+                    monitor = %monitor.description(),
+                    error = %error,
+                    "macOS monitor EDID is unusable; using CoreGraphics identity"
+                );
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            let handle = monitor.handle();
+            (
+                fingerprint_from_native_ids(
+                    handle.vendor_number(),
+                    handle.model_number(),
+                    monitor.serial_number(),
+                ),
+                None,
+            )
+        });
+
+    MonitorDescriptor {
         id: id_for(monitor),
         name: monitor.description(),
         fingerprint,
         active: true,
         max_resolution,
-    })
+    }
 }
 
 fn id_for(monitor: &Monitor) -> MonitorId {
@@ -107,6 +124,27 @@ fn fingerprint_from_edid(edid: &[u8]) -> Result<MonitorFingerprint, DisplayMuxEr
         product_code,
         (serial != 0).then(|| serial.to_string()),
     ))
+}
+
+fn fingerprint_from_native_ids(
+    vendor_number: u32,
+    model_number: u32,
+    serial_number: Option<String>,
+) -> MonitorFingerprint {
+    let manufacturer = vendor_number as u16;
+    let manufacturer_id = [
+        manufacturer_character((manufacturer >> 10) & 0x1f),
+        manufacturer_character((manufacturer >> 5) & 0x1f),
+        manufacturer_character(manufacturer & 0x1f),
+    ]
+    .into_iter()
+    .collect::<String>();
+
+    MonitorFingerprint::new(
+        manufacturer_id,
+        format!("{:04X}", model_number),
+        serial_number,
+    )
 }
 
 fn manufacturer_character(value: u16) -> char {
@@ -166,6 +204,18 @@ mod tests {
         [edid[12], edid[13], edid[14], edid[15]] = 278_504_u32.to_le_bytes();
 
         let fingerprint = fingerprint_from_edid(&edid).unwrap();
+
+        assert_eq!(fingerprint.manufacturer_id, "AUS");
+        assert_eq!(fingerprint.product_code, "3554");
+        assert_eq!(fingerprint.serial_number.as_deref(), Some("278504"));
+    }
+
+    #[test]
+    fn builds_matching_identity_from_core_graphics_when_edid_is_missing() {
+        let vendor_number = (1_u32 << 10) | (21_u32 << 5) | 19_u32;
+
+        let fingerprint =
+            fingerprint_from_native_ids(vendor_number, 0x3554, Some("278504".to_owned()));
 
         assert_eq!(fingerprint.manufacturer_id, "AUS");
         assert_eq!(fingerprint.product_code, "3554");
