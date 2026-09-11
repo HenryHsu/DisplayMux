@@ -103,7 +103,7 @@ jobs:
       - name: Read application version
         id: app_version
         shell: bash
-        run: echo "version=$(node -p \"require('./src-tauri/tauri.conf.json').version\")" >> "$GITHUB_OUTPUT"
+        run: node -p '"version=" + require("./src-tauri/tauri.conf.json").version' >> "$GITHUB_OUTPUT"
 
       - name: Publish signed release
         env:
