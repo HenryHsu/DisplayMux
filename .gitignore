@@ -1,0 +1,31 @@
+/target/
+/node_modules/
+/dist/
+
+*.pdb
+*.log
+.DS_Store
+Thumbs.db
+
+.env
+.env.*
+!.env.example
+
+# Signing keys, certificates, and local credentials
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+credentials.json
+secrets.json
+
+.idea/
+.vscode/
+
+# Local AI-agent instructions and session tracking
+/AGENTS.md
+/Task_Completed.md
+/PendingTask.md

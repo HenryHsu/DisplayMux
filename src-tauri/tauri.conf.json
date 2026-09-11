@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DisplayMux",
+  "version": "0.1.0",
+  "identifier": "com.displaymux.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "DisplayMux",
+        "width": 1040,
+        "height": 720,
+        "minWidth": 820,
+        "minHeight": 620,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "shortDescription": "Safely switch one shared monitor between two computers",
+    "longDescription": "DisplayMux coordinates Windows and macOS over a local network and changes only the configured shared monitor input."
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkyRkNGQTE5NEZFQkEzRjAKUldUd28rdFBHZnI4a3Y0N055amROWjlBMUp4aGFmbUZENHg0YUp2c2RIQS8rOHFyWGo2T2VBV3AK",
+      "endpoints": [
+        "https://github.com/HenryHsu/DisplayMux/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

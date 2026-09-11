@@ -1,0 +1,30 @@
+[package]
+name = "displaymux-app"
+version = "0.1.0"
+description = "Switch one shared monitor safely between Windows and macOS"
+authors = ["DisplayMux contributors"]
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "displaymux_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+displaymux-core = { path = "../crates/displaymux-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2.10"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys.workspace = true

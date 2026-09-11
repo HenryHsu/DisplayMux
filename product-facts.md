@@ -1,0 +1,86 @@
+# DisplayMux Product Facts
+
+最後查證：2026-09-10
+
+本文件記錄會直接影響產品設計與實作的外部事實。尚未在實機驗證的項目不得寫成已支援功能。
+
+## 桌面框架
+
+- 使用 Tauri 2 作為 Windows 與 macOS 的桌面殼層；前端採 Vite 靜態 SPA，透過 Tauri command 與 Rust 後端溝通。
+- Tauri 2 官方提供 Windows 與 macOS 的 autostart plugin，可用於讓常駐代理程式在登入後啟動。
+- Tauri CLI 目前尚未加入本專案；應以專案本地開發依賴加入，避免要求使用者安裝全域 CLI。
+
+來源：
+
+- https://v2.tauri.app/start/
+- https://v2.tauri.app/start/frontend/
+- https://v2.tauri.app/plugin/autostart/
+
+## 網路喚醒
+
+- Wake-on-LAN 的 magic packet 可以協助喚醒支援且已正確設定的網路介面。
+- Windows 官方支援範圍主要是睡眠 S3 與休眠 S4；Fast Startup 或完整關機 S5 不應承諾一定能喚醒，實際結果仍受主機板、韌體、網卡與供電設定影響。
+- macOS 的「Wake for network access」必須由使用者在系統設定中啟用；實際喚醒能力仍取決於 Mac 型號、電源狀態與網路連線方式。
+- DisplayMux 不得宣稱能喚醒已斷電、拔除電源，或硬體不支援網路喚醒的電腦。
+
+來源：
+
+- https://learn.microsoft.com/en-us/windows/win32/power/system-power-states
+- https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/wake-on-lan-feature
+- https://learn.microsoft.com/en-us/windows-hardware/drivers/network/standardized-inf-keywords-for-power-management
+- https://support.apple.com/en-gb/guide/mac-help/mh27905/mac
+
+## 區域網路主機探索
+
+- DisplayMux 使用 DNS-SD over mDNS 廣告 `_displaymux._tcp.local.` 服務，讓 Windows 與 macOS 在不啟用 SMB 檔案分享的情況下互相找到主機名稱與 Agent endpoint。
+- `mdns-sd` 可自動追蹤主機網路介面的 IP 變更，並透過 TXT properties 傳遞 DisplayMux 主機識別資料。
+- 探索僅在主機醒著且 DisplayMux 執行時有效；配對後必須保存 endpoint 與 MAC，才能在對方睡眠時嘗試 Wake-on-LAN。
+- macOS 15+ 的 Local Network Privacy 要求 app 說明區域網路用途，使用 Bonjour 時也應在 `Info.plist` 宣告瀏覽的 service type；macOS 不要求 iOS 的 multicast entitlement。
+
+來源：
+
+- https://docs.rs/mdns-sd/latest/mdns_sd/
+- https://docs.rs/mdns-sd/latest/mdns_sd/struct.ServiceInfo.html
+- https://docs.rs/mac_address/latest/mac_address/
+- https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
+- https://developer.apple.com/documentation/bundleresources/information-property-list/nsbonjourservices
+
+## macOS DDC/CI
+
+- Rust 生態有 `ddc-macos` 實作，可作為 macOS DDC/CI 後端的候選方案。
+- macOS 的外接螢幕 DDC/CI 支援不是所有 Mac、連接埠與轉接器的穩定公開 API；Apple Silicon、內建 HDMI、USB-C/Thunderbolt 轉接器的能力可能不同。
+- `m1ddc` 專案明確記錄部分 Apple Silicon 內建 HDMI 的限制。因此，在知道 Mac 精確型號、晶片與 HDMI-1 的實際連接路徑前，只能建立抽象層與測試工具，不能承諾 VG35VQ 的輸入切換一定能由 macOS 發起。
+- 目前 Windows 實機已驗證 ASUS VG35VQ 的 VCP `0x60`，Windows DP 為 `0x0F`、Mac HDMI-1 為 `0x11`；Lenovo Q27q-10 必須維持非目標螢幕。
+
+來源：
+
+- https://github.com/haimgel/ddc-macos-rs
+- https://docs.rs/ddc/latest/ddc/
+- https://github.com/waydabber/m1ddc
+
+## MCCS 輸入來源值
+
+- DisplayMux 以 VCP feature `0x60` 控制輸入來源；`0x0F`、`0x10`、`0x11`、`0x12` 可分別標示為 DisplayPort 1、DisplayPort 2、HDMI 1、HDMI 2。
+- 顯示器的 capabilities string 可宣告其接受的 `0x60` 值，但實際資料可能不完整或錯誤，不能取代切換時的安全檢查。
+- MCCS 沒有跨廠商一致的 USB-C 輸入值。未列於標準對照的值必須顯示為廠商自訂值，不得猜測接頭名稱。
+
+來源：
+
+- https://vesa.org/vesa-standards/
+- https://github.com/microsoft/PowerToys/blob/main/doc/devdocs/modules/powerdisplay/design.md
+- https://www.ddcutil.com/faq/
+
+## 產品安全邊界
+
+- 螢幕切換只允許作用於使用者明確選取、且完整 EDID 指紋精確符合的單一共用螢幕。
+- 網路上的遠端 command 必須經過配對與驗證；不得提供未驗證的區網切換端點。
+- 切換流程應先確認目標主機代理程式已就緒；若離線，先送 Wake-on-LAN，再等待健康檢查。逾時時停止自動切換，讓使用者決定是否強制切換。
+- 應用程式更新必須通過 Tauri updater 公鑰驗證；使用者確認前不得靜默下載或安裝。
+- 更新簽章私鑰不得進入原始碼、安裝包、Release assets 或 CI log；release workflow 必須使用最小 `GITHUB_TOKEN` 權限並將 Actions 固定到完整 commit SHA。
+- Tauri updater 簽章不等同 Windows Authenticode 或 macOS Developer ID/notarization；正式對外發佈仍應補齊兩個平台的作業系統層級程式碼簽署。
+
+來源：
+
+- https://v2.tauri.app/plugin/updater/
+- https://v2.tauri.app/distribute/pipelines/github/
+- https://docs.github.com/en/actions/reference/security/secure-use
