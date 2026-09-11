@@ -134,25 +134,8 @@ pnpm build:dmg
 
 DMG 產物會位於 `target/release/bundle/dmg/`。
 
-## 自動更新與發佈
+## 自動更新
 
 DisplayMux 啟動後可檢查公開的 GitHub Releases，但不會靜默下載或安裝。發現新版本時會顯示版本與 release notes，必須由使用者按下「下載並安裝」；Rust 後端會先驗證 Tauri updater 簽章，成功後才執行安裝與重新啟動。
 
-目前 Repository 已設為 Public，因此應用程式不需 GitHub 帳號或 Personal Access Token 即可讀取已發布的 Release 更新資訊。Draft Release 不會提供給一般使用者；維護者必須完成檢查並正式發布後，客戶端才會偵測到新版本。
-
-建立正式版本前，需同步更新 `package.json`、`src-tauri/Cargo.toml` 與 `src-tauri/tauri.conf.json` 的 SemVer，再建立相同版本的 tag：
-
-```powershell
-git tag v0.2.0
-```
-
-推送 tag 後，`.github/workflows/release.yml` 會依序建置 Windows x64、macOS Apple Silicon 與 macOS Intel，執行測試、簽署 updater artifacts，並建立 draft Release。
-
-一般貢獻者執行 `pnpm tauri build` 不需要 updater 私鑰；只有 release workflow 會合併 `src-tauri/tauri.release.conf.json` 並建立可供自動更新的簽章 artifacts。
-
-安全注意事項：
-
-- `TAURI_SIGNING_PRIVATE_KEY` 只保存於 GitHub Actions Secrets 與維護者的離線備份，絕對不能提交到 Git。
-- updater 私鑰一旦遺失，既有安裝將無法驗證之後的新金鑰；一旦外洩，必須視為重大供應鏈事件。
-- GitHub Actions 固定到完整 commit SHA，簽章 Secret 只提供給 release build 步驟。
-- 發布前應檢查 Release artifacts、簽章與 release notes，並避免在內容中加入主機名稱、內網位址或其他環境資訊。
+Repository 為 Public，因此不需 GitHub 帳號或 Personal Access Token 即可取得已發布的更新。更新檢查不會傳送 DisplayMux 設定、配對密碼、電腦名稱、內網位址或螢幕資訊。
