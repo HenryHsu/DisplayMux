@@ -103,17 +103,20 @@ if (!app) throw new Error("找不到 DisplayMux 應用程式根節點");
 
 app.innerHTML = `
   <div class="app-shell">
-    <aside class="rail" aria-label="主要導覽">
-      <div class="brand-mark" aria-label="DisplayMux"><i data-lucide="arrow-left-right"></i></div>
-      <nav class="rail-nav">
-        <button class="rail-button is-active" data-page="dashboard"><i data-lucide="monitor"></i><span>切換</span></button>
-        <button class="rail-button" data-page="settings"><i data-lucide="settings"></i><span>設定</span></button>
+    <aside class="sidebar" aria-label="主要導覽">
+      <div class="brand-header">
+        <div class="brand-icon"><i data-lucide="monitor"></i></div>
+        <span class="brand-title">DisplayMux</span>
+      </div>
+      <nav class="sidebar-nav">
+        <button class="nav-button is-active" data-page="dashboard"><i data-lucide="arrow-left-right"></i><span>切換中心</span></button>
+        <button class="nav-button" data-page="settings"><i data-lucide="settings"></i><span>螢幕與主機</span></button>
       </nav>
-      <button class="rail-button rail-bottom" data-page="help"><i data-lucide="circle-help"></i><span>說明</span></button>
+      <button class="nav-button nav-bottom" data-page="help"><i data-lucide="circle-help"></i><span>使用說明</span></button>
     </aside>
     <main class="workspace">
       <header class="topbar">
-        <div><p class="eyebrow">DISPLAYMUX CONTROL</p><h1 id="page-title">共用螢幕切換中心</h1></div>
+        <h1 id="page-title">共用螢幕切換中心</h1>
         <div class="topbar-actions">
           <div class="agent-pill" id="agent-pill"><span class="status-dot"></span><span>讀取中</span></div>
           <button class="icon-button" id="update-button" title="檢查更新"><i data-lucide="download"></i></button>
@@ -122,67 +125,113 @@ app.innerHTML = `
       </header>
 
       <section class="page is-active" id="dashboard-page">
-        <div class="context-row">
-          <div><p class="section-kicker">SHARED DISPLAY</p><p class="context-copy">只會控制你選取的共用螢幕；其他螢幕不會收到任何切換命令。</p></div>
-          <span class="safety-badge"><i data-lucide="shield-check"></i> 精確指紋鎖定</span>
+        <div class="showcase-monitor-card">
+          <div class="showcase-header">
+            <span class="showcase-title">共用螢幕</span>
+            <span class="status-badge" id="screen-input">DDC/CI 已就緒</span>
+          </div>
+          <div class="curved-monitor-wrap">
+            <svg class="curved-monitor-svg" viewBox="0 0 340 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M125 168H215L208 160H132L125 168Z" fill="#2d3a34" />
+              <path d="M162 124H178V160H162V124Z" fill="#384740" />
+              <path d="M18 34C88 20 252 20 322 34L316 128C248 116 92 116 24 128L18 34Z" fill="#141e1a" stroke="#2a3832" stroke-width="3.5" />
+              <path d="M25 39C90 26 250 26 315 39L310 123C246 112 94 112 30 123L25 39Z" fill="#0d241b" />
+              <path d="M28 42C92 29 200 29 240 33L180 119C120 115 75 116 33 120L28 42Z" fill="white" fill-opacity="0.08" />
+            </svg>
+          </div>
+          <div class="showcase-info">
+            <strong class="showcase-monitor-name" id="shared-monitor-name">尚未選擇</strong>
+            <p class="showcase-monitor-desc" id="monitor-status">以 EDID 製造商、產品碼與序號鎖定，不依顯示器排列順序。</p>
+          </div>
         </div>
-        <section class="generic-monitor-card">
-          <div class="monitor-frame"><div class="monitor-screen"><span class="screen-brand">SHARED MONITOR</span><strong id="shared-monitor-name">尚未選擇</strong><span class="screen-input" id="screen-input">NOT CONFIGURED</span></div><div class="monitor-stand"></div></div>
-          <div><p class="section-kicker">MONITOR STATUS</p><h2 id="monitor-status">正在偵測</h2><p>以 EDID 製造商、產品碼與序號鎖定，不依顯示器排列順序。</p></div>
-        </section>
+
         <div class="host-route-grid" id="host-route-grid"></div>
-        <section class="health-grid">
-          <article class="health-card"><div class="health-icon"><i data-lucide="monitor"></i></div><div><span>共用螢幕</span><strong id="monitor-health">正在偵測</strong></div></article>
-          <article class="health-card"><div class="health-icon"><i data-lucide="network"></i></div><div><span>已加入主機</span><strong id="peer-health">0 台</strong></div></article>
-          <article class="health-card"><div class="health-icon"><i data-lucide="moon-star"></i></div><div><span>喚醒能力</span><strong id="wake-health">尚未加入主機</strong></div></article>
+
+        <section class="status-summary-bar">
+          <div class="summary-item"><span>共用螢幕：</span><strong id="monitor-health" class="text-accent">正在偵測</strong></div>
+          <span class="summary-pipe"></span>
+          <div class="summary-item"><span>已加入主機：</span><strong id="peer-health">0 台</strong></div>
+          <span class="summary-pipe"></span>
+          <div class="summary-item"><span>喚醒支援：</span><strong id="wake-health" class="text-accent">尚未加入主機</strong></div>
         </section>
       </section>
 
       <section class="page" id="settings-page">
         <div class="settings-layout">
           <section class="settings-main">
-            <div class="settings-intro"><p class="section-kicker">DISPLAY AND HOST ROUTES</p><h2>選擇共用螢幕與每台主機的輸入</h2><p>輸入值會依 MCCS 標準顯示名稱；螢幕廠商的自訂值則保留為十六進位，不會猜成錯誤的接頭。</p></div>
             <form id="settings-form">
-              <div class="form-section">
-                <div class="pairing-heading"><div><strong>1. 選擇唯一的共用螢幕</strong><small>未選取的螢幕一律不控制。</small></div></div>
+              <div class="form-section first">
+                <div class="pairing-heading">
+                  <strong>1. 選擇唯一的共用螢幕</strong>
+                </div>
                 <div class="monitor-picker" id="monitor-picker"></div>
               </div>
+
               <div class="form-section two-columns">
                 <label class="field"><span>這台電腦</span><input id="local-host-name" disabled /></label>
                 <label class="field"><span>這台電腦連接的輸入值</span><input id="local-input" list="input-values" placeholder="例如 0x0F" /><small id="local-input-name">尚未設定</small></label>
               </div>
+
               <div class="form-section pairing-section">
-                <div class="pairing-heading"><div><strong>2. 加入同網路的其他主機</strong><small>可加入多台主機，每台各自指定螢幕輸入。</small></div><button class="scan-button" id="scan-button" type="button"><i data-lucide="search"></i>重新搜尋</button></div>
+                <div class="pairing-heading">
+                  <strong>2. 加入同網路的其他主機</strong>
+                  <button class="scan-button" id="scan-button" type="button"><i data-lucide="search"></i>重新搜尋</button>
+                </div>
                 <div class="peer-list" id="peer-list"></div>
                 <div class="paired-routes" id="paired-routes"></div>
               </div>
+
               <div class="form-section two-columns">
                 <label class="field"><span>配對密碼</span><div class="input-wrap"><i data-lucide="key-round"></i><input id="shared-key" type="password" minlength="8" placeholder="至少 8 個字元" /></div><small>所有主機請填入完全相同的內容。</small></label>
-                <label class="field compact"><span>喚醒等待秒數</span><input id="wait-seconds" type="number" min="5" max="120" /><small>逾時後不切換，避免黑畫面。</small></label>
+                <label class="field compact"><span>喚醒等待秒數 (45 秒)</span><input id="wait-seconds" type="number" min="5" max="120" /><small>逾時後不切換，避免黑畫面。</small></label>
               </div>
-              <label class="check-row"><input id="autostart" type="checkbox" /><span><strong>登入後自動啟動</strong><small>讓其他主機能搜尋、喚醒並要求這台電腦代為切換。</small></span></label>
-              <label class="check-row"><input id="check-updates" type="checkbox" /><span><strong>啟動後自動檢查更新</strong><small>只向 GitHub Releases 取得版本資訊；下載與安裝前仍會要求確認。</small></span></label>
-              <div class="form-actions"><p><i data-lucide="shield-check"></i>只有上方選取的螢幕會成為控制目標</p><button class="save-button" type="submit"><i data-lucide="save"></i>儲存設定</button></div>
+
+              <div class="toggles-section">
+                <label class="switch-row">
+                  <span class="switch-label">
+                    <strong>登入後自動啟動</strong>
+                    <small>讓其他主機能搜尋、喚醒並要求這台電腦代為切換。</small>
+                  </span>
+                  <input id="autostart" type="checkbox" class="toggle-checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+                <label class="switch-row">
+                  <span class="switch-label">
+                    <strong>啟動後自動檢查更新</strong>
+                    <small>只向 GitHub Releases 取得版本資訊；下載與安裝前仍會要求確認。</small>
+                  </span>
+                  <input id="check-updates" type="checkbox" class="toggle-checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <button class="save-button full-width" type="submit"><i data-lucide="save"></i>儲存設定</button>
+              </div>
             </form>
           </section>
+
           <aside class="compatibility-panel">
-            <p class="section-kicker">INPUT VALUES</p><h3>輸入值判讀</h3>
-            <div class="path-item"><span>01</span><div><strong>標準值自動命名</strong><p>例如 0x0F 顯示為 DisplayPort 1，0x11 顯示為 HDMI 1。</p></div></div>
-            <div class="path-item"><span>02</span><div><strong>自訂值保留原碼</strong><p>USB-C 等輸入可能使用廠商自訂值，DisplayMux 會顯示「自訂輸入」。</p></div></div>
-            <div class="path-item"><span>03</span><div><strong>多主機路由</strong><p>同一台螢幕可為每台已加入主機保存不同輸入值。</p></div></div>
+            <h3>輸入值判讀</h3>
+            <div class="path-item"><span class="path-badge">01</span><div><strong>MCCS 標準通訊規範</strong><p>標準值自動命名（如 0x0F 為 DisplayPort 1，0x11 為 HDMI 1）。</p></div></div>
+            <div class="path-item"><span class="path-badge">02</span><div><strong>DDC/CI 協議</strong><p>USB-C 等輸入可能使用廠商自訂值，DisplayMux 會保留原碼顯示自訂輸入。</p></div></div>
+            <div class="path-item"><span class="path-badge">03</span><div><strong>多主機路由切換確認</strong><p>同一台共用螢幕可為每台已加入主機保存不同輸入值，確保切換安全。</p></div></div>
+            <div class="compat-note"><i data-lucide="shield-check"></i><p>即使更換螢幕，也只會控制選取的 EDID 指紋，保護其他獨立工作螢幕安全。</p></div>
           </aside>
         </div>
       </section>
 
-      <section class="page" id="help-page"><div class="help-content">
-        <p class="section-kicker">OPERATING NOTES</p><h2>安全與相容性說明</h2>
-        <div class="note-list">
-          <article><span>01</span><div><h3>更換螢幕</h3><p>更換後請重新選擇共用螢幕。舊指紋找不到時，DisplayMux 會停止而不會改動其他螢幕。</p></div></article>
-          <article><span>02</span><div><h3>輸入值</h3><p>DisplayMux 使用 DDC/CI VCP 0x60。常見值可自動命名，但廠商自訂值應依螢幕選單或說明書確認。</p></div></article>
-          <article><span>03</span><div><h3>系統睡眠</h3><p>切換至遠端主機前會先測試連線，必要時送出 Wake-on-LAN，等待 Agent 回應後才切換。</p></div></article>
-          <article><span>04</span><div><h3>MacBook 轉接器</h3><p>若 USB-C 或 HDMI 轉接器未轉送 DDC，可由另一台已配對、可控制螢幕的主機代為切換。</p></div></article>
+      <section class="page" id="help-page">
+        <div class="help-content">
+          <p class="section-kicker">OPERATING NOTES</p><h2>安全與相容性說明</h2>
+          <div class="note-list">
+            <article><span>01</span><div><h3>更換螢幕</h3><p>更換後請重新選擇共用螢幕。舊指紋找不到時，DisplayMux 會停止而不會改動其他螢幕。</p></div></article>
+            <article><span>02</span><div><h3>輸入值</h3><p>DisplayMux 使用 DDC/CI VCP 0x60。常見值可自動命名，但廠商自訂值應依螢幕選單或說明書確認。</p></div></article>
+            <article><span>03</span><div><h3>系統睡眠</h3><p>切換至遠端主機前會先測試連線，必要時送出 Wake-on-LAN，等待 Agent 回應後才切換。</p></div></article>
+            <article><span>04</span><div><h3>MacBook 轉接器</h3><p>若 USB-C 或 HDMI 轉接器未轉送 DDC，可由另一台已配對、可控制螢幕的主機代為切換。</p></div></article>
+          </div>
         </div>
-      </div></section>
+      </section>
     </main>
   </div>
   <datalist id="input-values"></datalist>
@@ -237,7 +286,7 @@ document.querySelector("#host-route-grid")?.addEventListener("click", (event) =>
 function showPage(page: string): void {
   document.querySelectorAll(".page").forEach((item) => item.classList.remove("is-active"));
   document.querySelector(`#${page}-page`)?.classList.add("is-active");
-  document.querySelectorAll(".rail-button").forEach((item) => item.classList.toggle("is-active", (item as HTMLElement).dataset.page === page));
+  document.querySelectorAll(".nav-button").forEach((item) => item.classList.toggle("is-active", (item as HTMLElement).dataset.page === page));
   setText("#page-title", pageTitles[page] ?? pageTitles.dashboard);
 }
 
@@ -258,10 +307,10 @@ async function refresh(): Promise<void> {
 function renderState(): void {
   setText("#monitor-status", dashboard.monitorStatus);
   setText("#shared-monitor-name", settings.sharedMonitor?.name ?? "尚未選擇");
-  setText("#screen-input", dashboard.ddcAvailable ? "DDC READY" : "NOT AVAILABLE");
-  setText("#monitor-health", dashboard.ddcAvailable ? "已鎖定" : "尚未就緒");
-  setText("#peer-health", `${settings.peers.length} 台`);
-  setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? "部分或全部主機可喚醒" : "沒有喚醒資料");
+  setText("#screen-input", dashboard.ddcAvailable ? "DDC/CI 已就緒" : "尚未就緒");
+  setText("#monitor-health", dashboard.ddcAvailable ? (settings.sharedMonitor?.name ? `${settings.sharedMonitor.name} (已就緒)` : "已鎖定") : "尚未就緒");
+  setText("#peer-health", `${settings.peers.length + 1} 台 (本機 + ${settings.peers.length} 遠端)`);
+  setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? "已設定 MAC 位址 (正常)" : "尚未加入主機");
   const pill = document.querySelector("#agent-pill");
   pill?.classList.toggle("is-ready", dashboard.agentConfigured);
   if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? "介面預覽" : dashboard.agentConfigured ? "Agent 運作中" : "Agent 未設定";
@@ -288,7 +337,18 @@ function renderMonitors(): void {
     const selected = settings.sharedMonitor?.fingerprint;
     const isSelected = selected && sameFingerprint(selected, monitor.fingerprint);
     const fp = monitor.fingerprint;
-    return `<article class="peer-row ${isSelected ? "is-selected" : ""}"><div class="peer-identity"><strong>${escapeHtml(monitor.name)}</strong><span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? "無序號")}</span></div><button type="button" data-monitor-id="${escapeHtml(monitor.id)}" ${isSelected ? "disabled" : ""}>${isSelected ? "已選取" : "設為共用"}</button></article>`;
+    return `<article class="monitor-card-item ${isSelected ? "is-selected" : ""}">
+      <div class="monitor-item-left">
+        <div class="monitor-item-icon"><i data-lucide="monitor"></i></div>
+        <div class="monitor-identity">
+          <strong>${escapeHtml(monitor.name)}</strong>
+          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? "無序號")} ${dashboard.ddcAvailable ? "(DDC/CI 已就緒)" : ""}</span>
+        </div>
+      </div>
+      <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" ${isSelected ? "disabled" : ""}>
+        ${isSelected ? "已選取" : "設為共用"}
+      </button>
+    </article>`;
   }).join("");
 }
 
@@ -296,20 +356,80 @@ function renderPeerList(): void {
   const list = document.querySelector("#peer-list");
   if (!list) return;
   const available = discoveredPeers.filter((peer) => !settings.peers.some((item) => item.id === peer.id));
-  list.innerHTML = available.length ? available.map((peer) => `<article class="peer-row"><div class="peer-identity"><strong>${escapeHtml(peer.name)}</strong><span>${platformName(peer.platform)} · 自動取得網路資訊</span></div><button type="button" data-add-peer="${escapeHtml(peer.id)}"><i data-lucide="plus"></i>加入</button></article>`).join("") : `<p class="peer-empty">沒有尚未加入的 DisplayMux 主機</p>`;
+  list.innerHTML = available.length ? available.map((peer) => `<article class="peer-row">
+    <div class="peer-identity">
+      <strong>${escapeHtml(peer.name)}</strong>
+      <span>${platformName(peer.platform)} · 自動取得網路資訊</span>
+    </div>
+    <button type="button" class="peer-add-btn" data-add-peer="${escapeHtml(peer.id)}"><i data-lucide="plus"></i>加入</button>
+  </article>`).join("") : `<p class="peer-empty">沒有尚未加入的 DisplayMux 主機</p>`;
 }
 
 function renderPairedRoutes(): void {
   const container = document.querySelector("#paired-routes");
   if (!container) return;
-  container.innerHTML = settings.peers.length ? `<p class="field-title">已加入的主機與輸入</p>` + settings.peers.map((peer) => `<article class="route-editor"><div class="peer-identity"><strong>${escapeHtml(peer.name)}</strong><span>${platformName(peer.platform)} · ${escapeHtml(peer.address)}</span></div><label class="field"><span>螢幕輸入值</span><input data-route-input="${escapeHtml(peer.id)}" list="input-values" value="${peer.input == null ? "" : codeFor(peer.input)}" placeholder="例如 0x11"/><small data-input-hint="${escapeHtml(peer.id)}">尚未設定</small></label><button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="移除"><i data-lucide="trash-2"></i></button></article>`).join("") : `<p class="peer-empty">尚未加入其他主機</p>`;
+  container.innerHTML = settings.peers.length ? `<p class="field-title">已加入的主機與輸入</p>` + settings.peers.map((peer) => `<article class="paired-route-card">
+    <div class="peer-identity">
+      <strong>${escapeHtml(peer.name)}</strong>
+      <span>${platformName(peer.platform)} · ${escapeHtml(peer.address)}</span>
+    </div>
+    <div class="paired-route-right">
+      <label class="paired-input-wrap">
+        <span>輸入值:</span>
+        <input class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" list="input-values" value="${peer.input == null ? "" : codeFor(peer.input)}" placeholder="例如 0x11"/>
+      </label>
+      <button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="移除"><i data-lucide="trash-2"></i></button>
+    </div>
+  </article>`).join("") : `<p class="peer-empty">尚未加入其他主機</p>`;
 }
 
 function renderHostRoutes(): void {
   const container = document.querySelector("#host-route-grid");
   if (!container) return;
-  const routes = [{ id: "local", name: dashboard.localHost === "windows" ? "這台 Windows PC" : "這台 Mac", platform: dashboard.localHost, input: settings.localInput, local: true }, ...settings.peers.map((peer) => ({ ...peer, local: false }))];
-  container.innerHTML = routes.map((route) => `<article class="route-card ${route.local ? "is-local" : ""}"><div class="host-icon ${route.platform}"><i data-lucide="${route.platform === "mac" ? "laptop" : "computer"}"></i></div><div class="host-copy"><span class="host-label">${route.local ? "本機" : platformName(route.platform)}</span><h2>${escapeHtml(route.name)}</h2><p>${route.input == null ? "尚未設定輸入" : escapeHtml(inputName(route.input))}</p></div><button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || !settings.sharedMonitor ? "disabled" : ""}>切換至此主機</button>${route.local ? "" : `<div class="route-tools"><button class="text-button" data-probe-id="${escapeHtml(route.id)}">測試連線</button><button class="text-button" data-wake-id="${escapeHtml(route.id)}">送出喚醒</button></div>`}</article>`).join("");
+  const routes = [
+    { id: "local", name: dashboard.localHost === "windows" ? "這台 Windows 電腦" : "這台 Mac", platform: dashboard.localHost, input: settings.localInput, local: true },
+    ...settings.peers.map((peer) => ({ ...peer, local: false })),
+  ];
+  container.innerHTML = routes.map((route) => {
+    const badgeText = route.local
+      ? (route.platform === "mac" ? "本機 macOS" : "本機 Windows")
+      : (route.platform === "mac" ? "已連線 macOS" : "已連線 Windows");
+    const inputDesc = route.input == null
+      ? "尚未設定輸入"
+      : (route.local ? `目前輸入：${escapeHtml(inputName(route.input))}` : `指定輸入：${escapeHtml(inputName(route.input))}`);
+    const iconName = route.platform === "mac" ? "laptop" : "computer";
+
+    return `
+      <article class="host-route-card ${route.local ? "is-local" : ""}">
+        <div class="host-card-header">
+          <div class="host-icon ${route.platform}">
+            <i data-lucide="${iconName}"></i>
+          </div>
+          <div class="host-copy">
+            <span class="host-label ${route.local ? "is-local" : ""}">${badgeText}</span>
+            <h2 class="host-title">${escapeHtml(route.name)}</h2>
+            <p class="host-input-desc">${inputDesc}</p>
+          </div>
+        </div>
+        ${route.local ? `
+          <div class="local-active-state">
+            <span>目前顯示中</span>
+            <span class="active-toggle-indicator"></span>
+          </div>
+        ` : `
+          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || !settings.sharedMonitor ? "disabled" : ""}>
+            <i data-lucide="arrow-left-right"></i>
+            <span>切換至此主機</span>
+          </button>
+          <div class="route-tools">
+            <button class="text-button" type="button" data-probe-id="${escapeHtml(route.id)}">測試連線</button>
+            <span class="tool-sep">·</span>
+            <button class="text-button" type="button" data-wake-id="${escapeHtml(route.id)}">送出喚醒</button>
+          </div>
+        `}
+      </article>
+    `;
+  }).join("");
 }
 
 function renderInputHints(): void {
