@@ -15,8 +15,8 @@ importers:
         specifier: ^2.8.0
         version: 2.11.1
       lucide:
-        specifier: ^0.544.0
-        version: 0.544.0
+        specifier: ^1.42.0
+        version: 1.42.0
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2.8.4
@@ -435,8 +435,8 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  lucide@0.544.0:
-    resolution: {integrity: sha512-U5ORwr5z9Sx7bNTDFaW55RbjVdQEnAcT3vws9uz3vRT1G4XXJUDAhRZdxhFoIyHEvjmTkzzlEhjSLYM5n4mb5w==}
+  lucide@1.42.0:
+    resolution: {integrity: sha512-KLZ517pIUzuXGSFLlDL+5s6pcp4FI7brn4AXrFmRP7ghtxVVJ7/o4d3VejZeLPU127D/jITLs5WTLnH9Dc7VxA==}
 
   nanoid@3.3.18:
     resolution: {integrity: sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w==}
@@ -759,7 +759,7 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  lucide@0.544.0: {}
+  lucide@1.42.0: {}
 
   nanoid@3.3.18: {}
 
