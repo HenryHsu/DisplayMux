@@ -991,15 +991,24 @@ mod tests {
 
     #[test]
     fn migration_preserves_the_previous_two_host_configuration() {
-        let legacy = LegacySettings {
-            peer_id: "mac-mini".to_owned(),
-            peer_name: "Mac mini".to_owned(),
-            peer_ip: "192.168.1.20".to_owned(),
-            ..LegacySettings::default()
-        };
-        let migrated = migrate_legacy_settings(legacy);
-        assert!(migrated.shared_monitor.is_none());
-        assert_eq!(migrated.local_input.unwrap().value(), 0x0f);
-        assert_eq!(migrated.peers[0].input.unwrap().value(), 0x11);
+        let cases = [
+            (DestinationHost::Windows, DestinationHost::Mac, 0x0f, 0x11),
+            (DestinationHost::Mac, DestinationHost::Windows, 0x11, 0x0f),
+        ];
+
+        for (local_host, peer_platform, local_input, peer_input) in cases {
+            let legacy = LegacySettings {
+                local_host,
+                peer_id: "peer".to_owned(),
+                peer_name: "Peer computer".to_owned(),
+                peer_ip: "192.168.1.20".to_owned(),
+                ..LegacySettings::default()
+            };
+            let migrated = migrate_legacy_settings(legacy);
+            assert!(migrated.shared_monitor.is_none());
+            assert_eq!(migrated.local_input.unwrap().value(), local_input);
+            assert_eq!(migrated.peers[0].platform, peer_platform);
+            assert_eq!(migrated.peers[0].input.unwrap().value(), peer_input);
+        }
     }
 }
