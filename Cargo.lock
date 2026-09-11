@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "displaymux-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "displaymux-core",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "displaymux-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "displaymux-core",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "displaymux-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ddc",
  "ddc-macos",
