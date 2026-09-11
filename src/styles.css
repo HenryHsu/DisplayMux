@@ -35,7 +35,7 @@
 * { box-sizing: border-box; }
 button, input, select { font: inherit; }
 button { color: inherit; }
-body { margin: 0; min-width: 860px; min-height: 640px; overflow: hidden; background: var(--canvas); }
+body { margin: 0; min-width: 960px; min-height: 640px; overflow: hidden; background: var(--canvas); }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid rgba(19, 115, 86, 0.25); outline-offset: 2px; }
 
 /* Shell Layout */
@@ -216,13 +216,24 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 .page.is-active { display: block; }
 
+#dashboard-page.is-active {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+}
+
 /* Dashboard Showcase Monitor Card */
 .showcase-monitor-card {
   display: flex;
   flex-direction: column;
-  padding: 22px 28px 24px;
+  width: min(520px, 100%);
+  padding: 24px 32px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 18px;
   background: var(--panel-bg);
   box-shadow: var(--shadow-card);
 }
@@ -255,7 +266,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 }
 
 .curved-monitor-svg {
-  width: 320px;
+  width: 340px;
   max-width: 100%;
   height: auto;
   filter: drop-shadow(0 12px 24px rgba(18, 32, 26, 0.12));
@@ -264,11 +275,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .showcase-info { text-align: center; margin-top: 4px; }
 .showcase-monitor-name {
   display: block;
-  font-size: 21px;
+  font-size: 22px;
   font-weight: 800;
   color: var(--ink);
   letter-spacing: -0.02em;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 .showcase-monitor-desc {
   margin: 0;
@@ -276,13 +287,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   color: var(--muted);
   line-height: 1.5;
 }
+.showcase-monitor-desc:empty { display: none; }
 
 /* Host Route Grid & Cards */
 .host-route-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin: 18px 0;
+  gap: 20px;
+  width: min(840px, 100%);
+  margin: 0;
 }
 
 .host-route-card {
@@ -360,7 +373,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .local-active-state {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  gap: 12px;
   height: 44px;
   padding: 0 16px;
   background: #f2f7f4;
@@ -455,6 +469,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   border: 1px solid var(--line);
   border-radius: 14px;
   box-shadow: var(--shadow-card);
+  width: min(840px, 100%);
+  margin-top: auto;
 }
 
 .summary-item {
@@ -472,9 +488,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 /* Settings Page */
 .settings-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 290px;
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 24px;
   align-items: start;
+  max-width: 1060px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .settings-main {

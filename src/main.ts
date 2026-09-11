@@ -132,11 +132,32 @@ app.innerHTML = `
           </div>
           <div class="curved-monitor-wrap">
             <svg class="curved-monitor-svg" viewBox="0 0 340 180" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M125 168H215L208 160H132L125 168Z" fill="#2d3a34" />
-              <path d="M162 124H178V160H162V124Z" fill="#384740" />
-              <path d="M18 34C88 20 252 20 322 34L316 128C248 116 92 116 24 128L18 34Z" fill="#141e1a" stroke="#2a3832" stroke-width="3.5" />
-              <path d="M25 39C90 26 250 26 315 39L310 123C246 112 94 112 30 123L25 39Z" fill="#0d241b" />
-              <path d="M28 42C92 29 200 29 240 33L180 119C120 115 75 116 33 120L28 42Z" fill="white" fill-opacity="0.08" />
+              <defs>
+                <linearGradient id="screenGrad" x1="170" y1="28" x2="170" y2="124" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#152b21"/>
+                  <stop offset="100%" stop-color="#0c1713"/>
+                </linearGradient>
+                <linearGradient id="glareGrad" x1="312" y1="30" x2="160" y2="120" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/>
+                  <stop offset="60%" stop-color="#ffffff" stop-opacity="0.04"/>
+                  <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+                </linearGradient>
+                <linearGradient id="standCol" x1="164" y1="116" x2="176" y2="116" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#2a3832"/>
+                  <stop offset="50%" stop-color="#40534a"/>
+                  <stop offset="100%" stop-color="#222d28"/>
+                </linearGradient>
+              </defs>
+              <path d="M156 142L170 146L184 142L180 138H160L156 142Z" fill="#1b2420"/>
+              <path d="M164 116H176V148H164V116Z" fill="url(#standCol)"/>
+              <path d="M161 145H179L176 151H164L161 145Z" fill="#2d3b34"/>
+              <path d="M164 147L98 165C96 165.5 95 167 97 168L104 169L166 152V147H164Z" fill="#24302a"/>
+              <path d="M98 165L164 148L166 149L104 167L98 165Z" fill="#3b4b43"/>
+              <path d="M176 147L242 165C244 165.5 245 167 243 168L236 169L174 152V147H176Z" fill="#1f2a24"/>
+              <path d="M242 165L176 148L174 149L236 167L242 165Z" fill="#35443c"/>
+              <path d="M24 28C98 34 242 34 316 28L312 116C242 122 98 122 28 116L24 28Z" fill="#17221d" stroke="#2c3a33" stroke-width="2.5"/>
+              <path d="M27 30.5C99 36.5 241 36.5 313 30.5L309.5 113.5C239.5 119.5 100.5 119.5 30.5 113.5L27 30.5Z" fill="url(#screenGrad)"/>
+              <path d="M190 33.5C236 34 285 32 313 30.5L309.5 113.5C285 115 255 113 235 107L190 33.5Z" fill="url(#glareGrad)"/>
             </svg>
           </div>
           <div class="showcase-info">
@@ -305,12 +326,17 @@ async function refresh(): Promise<void> {
 }
 
 function renderState(): void {
-  setText("#monitor-status", dashboard.monitorStatus);
-  setText("#shared-monitor-name", settings.sharedMonitor?.name ?? "尚未選擇");
+  if (settings.sharedMonitor) {
+    setText("#shared-monitor-name", settings.sharedMonitor.name);
+    setText("#monitor-status", "");
+  } else {
+    setText("#shared-monitor-name", "尚未選擇");
+    setText("#monitor-status", dashboard.monitorStatus || "請在「螢幕與主機」設定頁選擇共用螢幕");
+  }
   setText("#screen-input", dashboard.ddcAvailable ? "DDC/CI 已就緒" : "尚未就緒");
-  setText("#monitor-health", dashboard.ddcAvailable ? (settings.sharedMonitor?.name ? `${settings.sharedMonitor.name} (已就緒)` : "已鎖定") : "尚未就緒");
-  setText("#peer-health", `${settings.peers.length + 1} 台 (本機 + ${settings.peers.length} 遠端)`);
-  setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? "已設定 MAC 位址 (正常)" : "尚未加入主機");
+  setText("#monitor-health", dashboard.ddcAvailable ? "已鎖定" : "尚未就緒");
+  setText("#peer-health", `${settings.peers.length} 台`);
+  setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? "正常" : (settings.peers.length ? "無 MAC 資料" : "尚未加入主機"));
   const pill = document.querySelector("#agent-pill");
   pill?.classList.toggle("is-ready", dashboard.agentConfigured);
   if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? "介面預覽" : dashboard.agentConfigured ? "Agent 運作中" : "Agent 未設定";
