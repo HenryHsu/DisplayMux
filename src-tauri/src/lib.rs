@@ -250,6 +250,7 @@ async fn save_settings(
     state: State<'_, AppRuntime>,
     app: AppHandle,
 ) -> Result<OperationResult, String> {
+    let settings = settings_for_current_build(settings);
     validate_settings(&settings).map_err(user_error)?;
     let enable_autostart = settings.autostart;
     store_settings(&state, settings)?;
@@ -887,6 +888,17 @@ fn has_valid_shared_key(shared_key: &str) -> bool {
     shared_key.chars().count() >= MIN_SHARED_KEY_LENGTH
 }
 
+fn settings_for_current_build(settings: AppSettings) -> AppSettings {
+    // A development executable may point at a dev server and, on Windows, may
+    // be a console process. Never persist it as a login item.
+    #[cfg(debug_assertions)]
+    let settings = AppSettings {
+        autostart: false,
+        ..settings
+    };
+    settings
+}
+
 pub fn run() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -905,7 +917,11 @@ pub fn run() -> anyhow::Result<()> {
                 .app_config_dir()
                 .map_err(|error| anyhow::anyhow!(error))?;
             let settings_path = config_dir.join("settings.json");
-            let settings = load_settings(&settings_path);
+            let settings = settings_for_current_build(load_settings(&settings_path));
+            #[cfg(debug_assertions)]
+            if let Err(error) = app.autolaunch().disable() {
+                tracing::warn!(error = %error, "unable to remove development autostart entry");
+            }
             let discovery = MdnsPeerDiscovery::start(local_host(), DEFAULT_AGENT_PORT)
                 .map(Some)
                 .unwrap_or_else(|error| {
@@ -965,6 +981,12 @@ mod tests {
         assert!(settings.local_input.is_none());
         assert!(settings.peers.is_empty());
         assert!(settings.check_updates);
+    }
+
+    #[test]
+    fn development_builds_do_not_register_autostart() {
+        let settings = settings_for_current_build(AppSettings::default());
+        assert_eq!(settings.autostart, !cfg!(debug_assertions));
     }
 
     #[test]

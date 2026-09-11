@@ -138,4 +138,6 @@ DMG 產物會位於 `target/release/bundle/dmg/`。
 
 DisplayMux 啟動後可檢查公開的 GitHub Releases，但不會靜默下載或安裝。發現新版本時會顯示版本與 release notes，必須由使用者按下「下載並安裝」；Rust 後端會先驗證 Tauri updater 簽章，成功後才執行安裝與重新啟動。
 
+Windows 開發版預設不建立主控台視窗，也不允許註冊為登入啟動項目。需要查看即時 Rust 日誌時，請使用 `pnpm tauri dev --features console`；正式安裝版仍可在設定中啟用開機自動啟動。
+
 Repository 為 Public，因此不需 GitHub 帳號或 Personal Access Token 即可取得已發布的更新。更新檢查不會傳送 DisplayMux 設定、配對密碼、電腦名稱、內網位址或螢幕資訊。

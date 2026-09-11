@@ -11,6 +11,11 @@ rust-version.workspace = true
 name = "displaymux_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Keep Windows GUI builds console-free by default. Developers can opt in with
+# `pnpm tauri dev --features console` when terminal logs are needed.
+console = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
