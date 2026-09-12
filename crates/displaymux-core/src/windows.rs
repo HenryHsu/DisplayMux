@@ -4,7 +4,8 @@ use serde::Deserialize;
 use windows_sys::core::BOOL;
 use windows_sys::Win32::{
     Devices::Display::{
-        DestroyPhysicalMonitor, GetNumberOfPhysicalMonitorsFromHMONITOR,
+        CapabilitiesRequestAndCapabilitiesReply, DestroyPhysicalMonitor,
+        GetCapabilitiesStringLength, GetNumberOfPhysicalMonitorsFromHMONITOR,
         GetPhysicalMonitorsFromHMONITOR, GetVCPFeatureAndVCPFeatureReply, SetVCPFeature,
         PHYSICAL_MONITOR,
     },
@@ -18,11 +19,12 @@ use windows_sys::Win32::{
 use wmi::WMIConnection;
 
 use crate::{
-    DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint,
-    MonitorId, MonitorResolution, ResolutionSource,
+    capabilities, DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor,
+    MonitorFingerprint, MonitorId, MonitorResolution, ResolutionSource,
 };
 
 const INPUT_SOURCE_VCP_CODE: u8 = 0x60;
+const MAX_CAPABILITIES_LENGTH: u32 = 64 * 1024;
 
 pub struct WindowsMonitorController;
 
@@ -123,6 +125,36 @@ impl MonitorControl for WindowsMonitorController {
         }
 
         DisplayInput::new(current)
+    }
+
+    fn supported_inputs(&self, monitor: &MonitorId) -> Result<Vec<DisplayInput>, DisplayMuxError> {
+        let native = self.find_native(monitor)?;
+        let mut length = 0_u32;
+        // SAFETY: the physical-monitor handle is live and `length` is a valid out-pointer.
+        if unsafe { GetCapabilitiesStringLength(native.handle, &mut length) } == 0 || length == 0 {
+            return Err(last_windows_error("無法取得螢幕 MCCS capabilities 長度"));
+        }
+        if length > MAX_CAPABILITIES_LENGTH {
+            return Err(DisplayMuxError::Backend(format!(
+                "螢幕回報的 MCCS capabilities 長度不合理：{length} bytes"
+            )));
+        }
+        let mut raw = vec![0_u8; length as usize];
+        // SAFETY: `raw` contains `length` writable bytes and the monitor handle remains live.
+        if unsafe {
+            CapabilitiesRequestAndCapabilitiesReply(native.handle, raw.as_mut_ptr(), length)
+        } == 0
+        {
+            return Err(last_windows_error("無法讀取螢幕 MCCS capabilities"));
+        }
+        let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
+        let inputs = capabilities::parse_input_sources(&raw[..end]);
+        if inputs.is_empty() {
+            return Err(DisplayMuxError::Backend(
+                "Windows 顯示器 capabilities 未宣告 VCP 0x60 輸入值".to_owned(),
+            ));
+        }
+        Ok(inputs)
     }
 
     fn write_input(&self, monitor: &MonitorId, input: DisplayInput) -> Result<(), DisplayMuxError> {

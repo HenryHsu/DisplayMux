@@ -55,6 +55,7 @@ interface AppSettings {
   localHost: Platform;
   sharedMonitor: SelectedMonitor | null;
   localInput: number | null;
+  supportedInputs: number[] | null;
   peers: HostRoute[];
   broadcastIp: string;
   wakePort: number;
@@ -83,7 +84,7 @@ interface DiscoveredPeer {
   macAddress: string | null;
 }
 
-interface InputOption { value: number; code: string; name: string; }
+interface InputOption { value: number; name: string; }
 interface OperationResult { title: string; detail: string; peerWoken: boolean; warning: boolean; }
 interface UpdateInfo { available: boolean; currentVersion: string; version: string | null; notes: string | null; }
 type SwitchProgressEvent =
@@ -103,11 +104,11 @@ const standardInputs: InputOption[] = [
   [0x07, "S-Video 1"], [0x08, "S-Video 2"], [0x09, t("input.tuner1")],
   [0x0a, t("input.tuner2")], [0x0b, t("input.tuner3")], [0x0c, t("input.component1")],
   [0x0d, t("input.component2")], [0x0e, t("input.component3")],
-  [0x0f, "DisplayPort 1"], [0x10, "DisplayPort 2"], [0x11, "HDMI 1"], [0x12, "HDMI 2"],
-].map(([value, name]) => ({ value: value as number, code: codeFor(value as number), name: name as string }));
+  [0x0f, "DP 1"], [0x10, "DP 2"], [0x11, "HDMI 1"], [0x12, "HDMI 2"], [0x1b, "Type-C"],
+].map(([value, name]) => ({ value: value as number, name: name as string }));
 
 const previewSettings: AppSettings = {
-  localHost: "windows", sharedMonitor: null, localInput: null, peers: [],
+  localHost: "windows", sharedMonitor: null, localInput: null, supportedInputs: null, peers: [],
   broadcastIp: "255.255.255.255", wakePort: 9, sharedKey: "", waitSeconds: 45, autostart: true, checkUpdates: true,
 };
 const previewDashboard: DashboardState = {
@@ -201,7 +202,7 @@ app.innerHTML = `
 
               <div class="form-section two-columns">
                 <label class="field"><span>${t("settings.localComputer")}</span><input id="local-host-name" disabled /></label>
-                <label class="field"><span>${t("settings.localInput")}</span><input id="local-input" list="input-values" placeholder="${t("settings.inputPlaceholder")}" /><small id="local-input-name">${t("input.unset")}</small></label>
+                <label class="field"><span>${t("settings.localInput")}</span><select id="local-input" disabled></select><small id="local-input-name">${t("input.unset")}</small></label>
               </div>
 
               <div class="form-section pairing-section">
@@ -284,7 +285,6 @@ app.innerHTML = `
       </section>
     </main>
   </div>
-  <datalist id="input-values"></datalist>
   <div class="operation-overlay" id="operation-overlay" aria-live="polite" aria-hidden="true"><div class="operation-dialog"><div class="spinner"></div><p class="section-kicker">SMART SWITCH</p><h2 id="operation-title">${t("operation.running")}</h2><p id="operation-detail">${t("operation.preparingBody")}</p></div></div>
   <div class="update-overlay" id="update-overlay" aria-hidden="true">
     <div class="update-dialog">
@@ -319,7 +319,7 @@ if (languageSelect) {
   });
 }
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
-document.querySelector<HTMLInputElement>("#local-input")?.addEventListener("input", renderInputHints);
+document.querySelector<HTMLSelectElement>("#local-input")?.addEventListener("input", renderInputHints);
 document.querySelector("#monitor-picker")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-monitor-id]");
   if (button?.dataset.monitorId) void selectMonitor(button.dataset.monitorId);
@@ -482,15 +482,17 @@ function renderState(): void {
   pill?.classList.toggle("is-ready", dashboard.agentConfigured);
   if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? t("dashboard.preview") : dashboard.agentConfigured ? t("dashboard.agentReady") : t("dashboard.agentMissing");
   setInput("#local-host-name", dashboard.localHost === "windows" ? t("dashboard.localWindowsPc") : t("dashboard.localMac"));
-  setInput("#local-input", settings.localInput == null ? "" : codeFor(settings.localInput));
+  const localInput = document.querySelector<HTMLSelectElement>("#local-input");
+  if (localInput) {
+    localInput.innerHTML = renderInputOptions("local", settings.localInput);
+    localInput.value = settings.localInput == null ? "" : String(settings.localInput);
+  }
   setInput("#shared-key", settings.sharedKey);
   setInput("#wait-seconds", String(settings.waitSeconds));
   const autostart = document.querySelector<HTMLInputElement>("#autostart");
   if (autostart) autostart.checked = settings.autostart;
   const checkUpdates = document.querySelector<HTMLInputElement>("#check-updates");
   if (checkUpdates) checkUpdates.checked = settings.checkUpdates;
-  const datalist = document.querySelector("#input-values");
-  if (datalist) datalist.innerHTML = inputOptions.map((item) => `<option value="${item.code}">${escapeHtml(localizedInputOptionName(item))}</option>`).join("");
   renderMonitors(); renderPeerList(); renderPairedRoutes(); renderHostRoutes(); renderInputHints(); refreshIcons();
 }
 
@@ -539,7 +541,8 @@ function renderPeerList(): void {
 function renderPairedRoutes(): void {
   const container = document.querySelector("#paired-routes");
   if (!container) return;
-  container.innerHTML = settings.peers.length ? `<p class="field-title">${t("settings.addedHosts")}</p>` + settings.peers.map((peer) => `<article class="paired-route-card">
+  const discoveryNote = `<p class="input-discovery-note">${settings.supportedInputs?.length ? t("settings.capabilitiesDetected", { count: inputOptions.length }) : t("settings.capabilitiesFallback")}</p>`;
+  container.innerHTML = discoveryNote + (settings.peers.length ? `<p class="field-title">${t("settings.addedHosts")}</p>` + settings.peers.map((peer) => `<article class="paired-route-card">
     <div class="peer-identity">
       <strong>${escapeHtml(peer.name)}</strong>
       <span>${platformName(peer.platform)} · ${escapeHtml(peer.address)}</span>
@@ -552,11 +555,32 @@ function renderPairedRoutes(): void {
     <div class="paired-route-right">
       <label class="paired-input-wrap">
         <span>${t("settings.inputValue")}</span>
-        <input class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" list="input-values" value="${peer.input == null ? "" : codeFor(peer.input)}" placeholder="${t("settings.inputPlaceholder")}"/>
+        <select class="paired-input-field" data-route-input="${escapeHtml(peer.id)}">${renderInputOptions(peer.id, peer.input)}</select>
       </label>
       <button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="${t("action.remove")}"><i data-lucide="trash-2"></i></button>
     </div>
-  </article>`).join("") : `<p class="peer-empty">${t("settings.noAddedHosts")}</p>`;
+  </article>`).join("") : `<p class="peer-empty">${t("settings.noAddedHosts")}</p>`);
+}
+
+function renderInputOptions(routeId: string, current: number | null): string {
+  const assignedElsewhere = new Set<number>();
+  const localValue = inputValueFromElement("#local-input", settings.localInput);
+  if (routeId !== "local" && localValue != null) assignedElsewhere.add(localValue);
+  for (const peer of settings.peers) {
+    const peerValue = inputValueFromElement(`[data-route-input="${cssEscape(peer.id)}"]`, peer.input);
+    if (peer.id !== routeId && peerValue != null) assignedElsewhere.add(peerValue);
+  }
+  const options = inputOptions
+    .filter((item) => !assignedElsewhere.has(item.value) || item.value === current)
+    .map((item) => `<option value="${item.value}" ${item.value === current ? "selected" : ""}>${escapeHtml(localizedInputOptionName(item))}</option>`)
+    .join("");
+  return `<option value="" ${current == null ? "selected" : ""}>${t("settings.selectInput")}</option>${options}`;
+}
+
+function inputValueFromElement(selector: string, fallback: number | null): number | null {
+  const value = document.querySelector<HTMLInputElement>(selector)?.value;
+  if (value == null) return fallback;
+  try { return parseInput(value); } catch { return null; }
 }
 
 function renderHostRoutes(): void {
@@ -604,9 +628,14 @@ function renderHostRoutes(): void {
 }
 
 function renderInputHints(): void {
-  const local = document.querySelector<HTMLInputElement>("#local-input");
+  const local = document.querySelector<HTMLSelectElement>("#local-input");
   setText("#local-input-name", labelForCode(local?.value ?? ""));
-  document.querySelectorAll<HTMLInputElement>("[data-route-input]").forEach((input) => setText(`[data-input-hint="${cssEscape(input.dataset.routeInput ?? "")}"]`, labelForCode(input.value)));
+  document.querySelectorAll<HTMLSelectElement>("[data-route-input]").forEach((input) => {
+    const routeId = input.dataset.routeInput ?? "";
+    const current = inputValueFromElement(`[data-route-input="${cssEscape(routeId)}"]`, null);
+    input.innerHTML = renderInputOptions(routeId, current);
+    input.value = current == null ? "" : String(current);
+  });
 }
 
 async function scanPeers(): Promise<void> {
@@ -640,10 +669,10 @@ async function removePeer(peerId: string): Promise<void> {
 async function saveSettings(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   try {
-    const localInput = parseInput(document.querySelector<HTMLInputElement>("#local-input")?.value ?? "");
+    const localInput = parseInput(document.querySelector<HTMLSelectElement>("#local-input")?.value ?? "");
     settings = {
       ...settings, localInput,
-      peers: settings.peers.map((peer) => ({ ...peer, input: parseInput(document.querySelector<HTMLInputElement>(`[data-route-input="${cssEscape(peer.id)}"]`)?.value ?? "") })),
+      peers: settings.peers.map((peer) => ({ ...peer, input: parseInput(document.querySelector<HTMLSelectElement>(`[data-route-input="${cssEscape(peer.id)}"]`)?.value ?? "") })),
       sharedKey: document.querySelector<HTMLInputElement>("#shared-key")?.value ?? "",
       waitSeconds: Number(document.querySelector<HTMLInputElement>("#wait-seconds")?.value ?? 45),
       autostart: document.querySelector<HTMLInputElement>("#autostart")?.checked ?? true,
@@ -764,7 +793,7 @@ function parseInput(value: string): number | null {
 
 function inputName(value: number): string {
   const known = inputOptions.find((item) => item.value === value);
-  return known ? `${localizedInputOptionName(known)} · ${known.code}` : t("input.custom", { code: codeFor(value) });
+  return known ? localizedInputOptionName(known) : t("input.other");
 }
 function localizedInputOptionName(input: InputOption): string {
   const localized = new Map<number, string>([
@@ -778,7 +807,6 @@ function labelForCode(value: string): string {
   try { const parsed = parseInput(value); return parsed == null ? t("input.unset") : inputName(parsed); }
   catch { return t("input.invalid"); }
 }
-function codeFor(value: number): string { return `0x${value.toString(16).toUpperCase().padStart(2, "0")}`; }
 function platformName(value: Platform): string { return value === "mac" ? "macOS" : "Windows"; }
 function isUltrawideResolution(value: MonitorResolution): boolean { return value.height > 0 && value.width >= value.height * 2; }
 function resolutionSourceName(value: ResolutionSource | null): string {

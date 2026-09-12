@@ -64,6 +64,9 @@ fn ui_text(zh_tw: &'static str, en: &'static str) -> &'static str {
 
 fn localized_input_name(input: DisplayInput) -> String {
     let standard_name = match (UiLocale::current(), input.value()) {
+        (_, 0x0f) => Some("DP 1"),
+        (_, 0x10) => Some("DP 2"),
+        (_, 0x1b) => Some("Type-C"),
         (UiLocale::TraditionalChinese, 0x05) => Some("複合視訊 1"),
         (UiLocale::TraditionalChinese, 0x06) => Some("複合視訊 2"),
         (UiLocale::TraditionalChinese, 0x09) => Some("電視調諧器 1"),
@@ -75,10 +78,10 @@ fn localized_input_name(input: DisplayInput) -> String {
         _ => input.standard_name(),
     };
     match standard_name {
-        Some(name) => format!("{name} (0x{:02X})", input.value()),
+        Some(name) => name.to_owned(),
         None => match UiLocale::current() {
-            UiLocale::TraditionalChinese => format!("自訂輸入 (0x{:02X})", input.value()),
-            UiLocale::English => format!("Custom input (0x{:02X})", input.value()),
+            UiLocale::TraditionalChinese => "其他輸入".to_owned(),
+            UiLocale::English => "Other input".to_owned(),
         },
     }
 }
@@ -146,6 +149,8 @@ struct AppSettings {
     local_host: DestinationHost,
     shared_monitor: Option<SelectedMonitor>,
     local_input: Option<DisplayInput>,
+    #[serde(default)]
+    supported_inputs: Option<Vec<DisplayInput>>,
     peers: Vec<HostRoute>,
     broadcast_ip: String,
     wake_port: u16,
@@ -161,6 +166,7 @@ impl Default for AppSettings {
             local_host: local_host(),
             shared_monitor: None,
             local_input: None,
+            supported_inputs: None,
             peers: Vec::new(),
             broadcast_ip: "255.255.255.255".to_owned(),
             wake_port: 9,
@@ -248,7 +254,6 @@ struct MonitorInventory {
 #[serde(rename_all = "camelCase")]
 struct InputOption {
     value: u32,
-    code: String,
     name: String,
 }
 
@@ -375,7 +380,8 @@ fn remove_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSetti
 
 #[tauri::command]
 fn select_monitor(monitor_id: String, state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
-    let monitor = enumerate_monitor_inventory()
+    let controller = platform_controller().map_err(core_user_error)?;
+    let monitor = monitor_inventory(&controller)
         .map_err(core_user_error)?
         .controllable
         .into_iter()
@@ -388,7 +394,15 @@ fn select_monitor(monitor_id: String, state: State<'_, AppRuntime>) -> Result<Ap
             .to_owned()
         })?;
     let mut settings = read_settings(&state)?;
+    let monitor_changed = settings
+        .shared_monitor
+        .as_ref()
+        .is_none_or(|selected| !selected.fingerprint.matches_exactly(&monitor.fingerprint));
     settings.shared_monitor = Some(SelectedMonitor::from(&monitor));
+    if monitor_changed {
+        settings.peers.iter_mut().for_each(|peer| peer.input = None);
+    }
+    refresh_selected_input_data(&controller, &monitor, &mut settings).map_err(core_user_error)?;
     store_settings(&state, settings)
 }
 
@@ -398,17 +412,19 @@ fn get_settings(state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-fn get_input_options() -> Vec<InputOption> {
-    (1..=0x12)
-        .filter_map(|value| DisplayInput::new(value).ok())
-        .filter_map(|input| {
-            input.standard_name().map(|name| InputOption {
-                value: input.value(),
-                code: format!("0x{:02X}", input.value()),
-                name: name.to_owned(),
-            })
+fn get_input_options(state: State<'_, AppRuntime>) -> Result<Vec<InputOption>, String> {
+    let settings = read_settings(&state)?;
+    let inputs = settings
+        .supported_inputs
+        .filter(|inputs| !inputs.is_empty())
+        .unwrap_or_else(common_input_sources);
+    Ok(inputs
+        .into_iter()
+        .map(|input| InputOption {
+            value: input.value(),
+            name: localized_input_name(input),
         })
-        .collect()
+        .collect())
 }
 
 #[tauri::command]
@@ -417,7 +433,14 @@ async fn save_settings(
     state: State<'_, AppRuntime>,
     app: AppHandle,
 ) -> Result<OperationResult, String> {
-    let settings = settings_for_current_build(settings);
+    let protected = read_settings(&state)?;
+    let mut settings = settings_for_current_build(settings);
+    // Monitor identity and discovered input data are backend-owned. The webview may only
+    // assign a filtered input to remote hosts; it cannot forge DDC discovery results.
+    settings.local_host = protected.local_host;
+    settings.shared_monitor = protected.shared_monitor;
+    settings.local_input = protected.local_input;
+    settings.supported_inputs = protected.supported_inputs;
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
     store_settings(&state, settings)?;
@@ -526,6 +549,30 @@ fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, S
                 &inventory.detected,
                 &inventory.controllable,
             ) {
+                if matches!(
+                    &change,
+                    MonitorSelectionChange::SelectedOnlyMonitor { .. }
+                        | MonitorSelectionChange::ReplacedMissingMonitor { .. }
+                ) {
+                    settings.peers.iter_mut().for_each(|peer| peer.input = None);
+                }
+                if let Some(selected) = settings.shared_monitor.as_ref().and_then(|selected| {
+                    inventory
+                        .controllable
+                        .iter()
+                        .find(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
+                }) {
+                    match platform_controller().and_then(|controller| {
+                        refresh_selected_input_data(&controller, selected, &mut settings)
+                    }) {
+                        Ok(()) => {}
+                        Err(error) => tracing::warn!(
+                            monitor_id = selected.id.as_str(),
+                            error = %error,
+                            "unable to record input data for automatically selected display"
+                        ),
+                    }
+                }
                 store_settings(&state, settings.clone())?;
                 selection_notice = match change {
                     MonitorSelectionChange::SelectedOnlyMonitor { name } => {
@@ -987,11 +1034,45 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
     {
         return Err(DisplayMuxError::Backend(
             ui_text(
-                "螢幕輸入值必須介於 0x01 與 0xFF",
-                "Display input values must be between 0x01 and 0xFF",
+                "請選擇有效的螢幕輸入 Port",
+                "Select a valid display input port",
             )
             .to_owned(),
         ));
+    }
+    let assigned_inputs = settings
+        .local_input
+        .into_iter()
+        .chain(settings.peers.iter().filter_map(|peer| peer.input))
+        .collect::<Vec<_>>();
+    let unique_inputs = assigned_inputs
+        .iter()
+        .map(|input| input.value())
+        .collect::<std::collections::HashSet<_>>();
+    if unique_inputs.len() != assigned_inputs.len() {
+        return Err(DisplayMuxError::Backend(
+            ui_text(
+                "每個主機必須使用不同的螢幕輸入 Port",
+                "Each host must use a different display input port",
+            )
+            .to_owned(),
+        ));
+    }
+    if let Some(supported) = &settings.supported_inputs {
+        if settings
+            .peers
+            .iter()
+            .filter_map(|peer| peer.input)
+            .any(|assigned| !supported.contains(&assigned))
+        {
+            return Err(DisplayMuxError::Backend(
+                ui_text(
+                    "輸入值不在這台螢幕的 MCCS capabilities 清單中",
+                    "The input is not listed in this display's MCCS capabilities",
+                )
+                .to_owned(),
+            ));
+        }
     }
     for peer in &settings.peers {
         route_endpoint(peer)?;
@@ -1221,6 +1302,7 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         // 舊版沒有保存使用者選擇；升級後要求重新選取，避免沿用硬體假設。
         shared_monitor: None,
         local_input,
+        supported_inputs: None,
         peers,
         broadcast_ip: legacy.broadcast_ip,
         wake_port: legacy.wake_port,
@@ -1303,6 +1385,38 @@ fn monitor_inventory<C: MonitorControl>(
     })
 }
 
+fn common_input_sources() -> Vec<DisplayInput> {
+    (1..=0x12)
+        .chain(std::iter::once(0x1b))
+        .filter_map(|value| DisplayInput::new(value).ok())
+        .filter(|input| input.standard_name().is_some() || input.value() == 0x1b)
+        .collect()
+}
+
+fn refresh_selected_input_data<C: MonitorControl>(
+    controller: &C,
+    monitor: &MonitorDescriptor,
+    settings: &mut AppSettings,
+) -> Result<(), DisplayMuxError> {
+    // Reading VCP 0x60 is non-disruptive. Never write or cycle ports for discovery.
+    settings.local_input = None;
+    settings.supported_inputs = None;
+    settings.local_input = Some(controller.read_input(&monitor.id)?);
+    settings.supported_inputs = match controller.supported_inputs(&monitor.id) {
+        Ok(inputs) if !inputs.is_empty() => Some(inputs),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(
+                monitor_id = monitor.id.as_str(),
+                error = %error,
+                "monitor capabilities unavailable; using common MCCS input list"
+            );
+            None
+        }
+    };
+    Ok(())
+}
+
 fn reconcile_monitor_selection(
     settings: &mut AppSettings,
     detected: &[MonitorDescriptor],
@@ -1373,6 +1487,12 @@ impl MonitorControl for UnsupportedController {
         &self,
         _monitor: &displaymux_core::MonitorId,
     ) -> Result<DisplayInput, DisplayMuxError> {
+        Err(DisplayMuxError::UnsupportedPlatform)
+    }
+    fn supported_inputs(
+        &self,
+        _monitor: &displaymux_core::MonitorId,
+    ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
         Err(DisplayMuxError::UnsupportedPlatform)
     }
     fn write_input(
@@ -1656,6 +1776,23 @@ mod tests {
             }
         }
 
+        fn supported_inputs(
+            &self,
+            monitor: &displaymux_core::MonitorId,
+        ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
+            if self.controllable.contains(monitor.as_str()) {
+                Ok(vec![
+                    DisplayInput::new(0x0f).unwrap(),
+                    DisplayInput::new(0x11).unwrap(),
+                    DisplayInput::new(0x1b).unwrap(),
+                ])
+            } else {
+                Err(DisplayMuxError::Backend(
+                    "capabilities unavailable".to_owned(),
+                ))
+            }
+        }
+
         fn write_input(
             &self,
             _monitor: &displaymux_core::MonitorId,
@@ -1790,6 +1927,71 @@ mod tests {
             settings.shared_monitor,
             Some(SelectedMonitor::from(&external))
         );
+    }
+
+    #[test]
+    fn selected_monitor_records_current_input_and_capability_values_without_writes() {
+        let external = monitor("external");
+        let controller = SelectionController {
+            monitors: vec![external.clone()],
+            controllable: HashSet::from([external.id.as_str().to_owned()]),
+        };
+        let mut settings = AppSettings::default();
+
+        refresh_selected_input_data(&controller, &external, &mut settings).unwrap();
+
+        assert_eq!(settings.local_input.unwrap().value(), 0x0f);
+        assert_eq!(
+            settings
+                .supported_inputs
+                .unwrap()
+                .iter()
+                .map(|input| input.value())
+                .collect::<Vec<_>>(),
+            vec![0x0f, 0x11, 0x1b]
+        );
+    }
+
+    #[test]
+    fn common_input_names_include_vga_dvi_dp_hdmi_and_type_c_without_codes() {
+        let inputs = common_input_sources();
+        for value in [0x01, 0x03, 0x0f, 0x11, 0x1b] {
+            assert!(inputs.iter().any(|input| input.value() == value));
+        }
+        assert_eq!(
+            localized_input_name(DisplayInput::new(0x0f).unwrap()),
+            "DP 1"
+        );
+        assert_eq!(
+            localized_input_name(DisplayInput::new(0x1b).unwrap()),
+            "Type-C"
+        );
+        assert!(!localized_input_name(DisplayInput::new(0x11).unwrap()).contains("0x"));
+    }
+
+    #[test]
+    fn settings_reject_duplicate_and_unadvertised_input_assignments() {
+        let mut settings = AppSettings {
+            local_input: DisplayInput::new(0x0f).ok(),
+            supported_inputs: Some(vec![
+                DisplayInput::new(0x0f).unwrap(),
+                DisplayInput::new(0x11).unwrap(),
+            ]),
+            ..AppSettings::default()
+        };
+        settings.peers.push(HostRoute {
+            id: "peer".to_owned(),
+            name: "Peer".to_owned(),
+            platform: DestinationHost::Mac,
+            address: "192.168.1.20".to_owned(),
+            port: DEFAULT_AGENT_PORT,
+            mac_address: String::new(),
+            input: DisplayInput::new(0x0f).ok(),
+        });
+        assert!(validate_settings(&settings).is_err());
+
+        settings.peers[0].input = DisplayInput::new(0x1b).ok();
+        assert!(validate_settings(&settings).is_err());
     }
 
     #[test]

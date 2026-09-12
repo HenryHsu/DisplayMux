@@ -1,3 +1,4 @@
+mod capabilities;
 mod domain;
 #[cfg(any(target_os = "macos", test))]
 mod edid;
