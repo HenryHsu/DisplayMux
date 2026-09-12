@@ -62,6 +62,17 @@ Windows 會透過系統 DDC/CI 介面列舉實際可控制的螢幕。macOS adap
 
 macOS 能否控制 DDC 仍取決於 Mac 晶片世代、macOS 版本、轉接器、擴充座與線材是否完整轉送 DDC。DisplayMux 會顯示實際偵測結果；連接路徑不可用時不會回報切換成功。
 
+### macOS 擴充座與 USB 顯示晶片限制
+
+外接螢幕能正常顯示畫面或被 macOS 偵測，不代表該連接路徑也提供 DDC/CI。DisplayMux 必須能從 macOS 取得對應的 DDC／I²C service，才能讀寫 MCCS VCP `0x60`：
+
+- 原生 USB-C DisplayPort Alt Mode 或 Thunderbolt 至 DisplayPort 的直連路徑最有機會完整提供 DDC/CI。
+- MST 擴充座不一定無法使用，但結果取決於晶片、韌體、連接拓撲及 macOS 能否正確辨識每台實體螢幕；應以 DisplayMux 實際讀取 VCP 的結果為準。
+- DisplayLink 透過驅動程式壓縮 framebuffer，再經 USB 傳送到擴充座晶片；一般 macOS DDC API 不一定能取得這條路徑的實體 I²C service。DisplayLink Manager 即使可透過自有功能調整亮度或對比，也不代表第三方程式可以送出輸入切換 VCP `0x60`。
+- Silicon Motion InstantView／SM76x／SM77x 也屬於 USB 虛擬顯示與壓縮傳輸。除非廠商驅動程式提供可用的 DDC API，DisplayMux 應視為影像可用但 DDC/CI 不可用。
+
+上述限制無法靠重試、重新配對或修正顯示器排列順序補回不存在的 DDC 通道。若直連可控制、經擴充座只能顯示畫面，通常代表限制位於擴充座或其驅動程式。此時可改用原生 Thunderbolt／DisplayPort／HDMI 連接，或由另一台具有可用 DDC/CI 路徑的已配對主機代為切換。
+
 建議的網路與電源設定：
 
 - Agent TCP Port 預設為 `47653`，參與配對的主機應保持一致。
@@ -134,6 +145,26 @@ pnpm build:dmg
 ```
 
 DMG 產物會位於 `target/release/bundle/dmg/`。
+
+### macOS Gatekeeper 與未公證測試版
+
+目前 macOS DMG 只有 ad-hoc 簽章，尚未使用 Apple Developer ID 正式簽章及 Apple notarization。從瀏覽器下載後，Gatekeeper 可能顯示「無法驗證開發者」或「Apple 無法檢查是否包含惡意軟體」，並阻擋第一次啟動。
+
+只有在確認 DMG 來自本專案可信任的 GitHub Release、且檔案未遭竄改時，才應允許執行。建議優先使用 macOS 圖形介面：
+
+1. 將 `DisplayMux.app` 拖曳到 `/Applications`，並嘗試開啟一次。
+2. 開啟「系統設定」→「隱私權與安全性」。
+3. 在「安全性」區域找到被阻擋的 DisplayMux，按下「仍要打開」。
+4. 完成身分驗證後，再次確認開啟。macOS 會只為這個 App 保存例外。
+
+若「仍要打開」沒有出現，而且已確認 App 來源可信，可在終端機只移除 DisplayMux 的 quarantine 屬性：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/DisplayMux.app
+open /Applications/DisplayMux.app
+```
+
+這不是系統範圍的白名單，也不應對不明來源的 App 或整個 `/Applications` 執行。Apple 的官方操作與風險說明請參考 [Open apps safely on your Mac](https://support.apple.com/102445)。
 
 ## 自動更新
 
