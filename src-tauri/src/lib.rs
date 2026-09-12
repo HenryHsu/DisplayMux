@@ -422,10 +422,13 @@ async fn save_settings(
     let enable_autostart = settings.autostart;
     store_settings(&state, settings)?;
     let autostart = app.autolaunch();
-    if enable_autostart {
-        autostart.enable().map_err(user_error)?;
-    } else {
-        autostart.disable().map_err(user_error)?;
+    let autostart_enabled = autostart.is_enabled().map_err(user_error)?;
+    if enable_autostart != autostart_enabled {
+        if enable_autostart {
+            autostart.enable().map_err(user_error)?;
+        } else {
+            autostart.disable().map_err(user_error)?;
+        }
     }
     restart_agent(&state).await?;
     Ok(OperationResult {
