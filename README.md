@@ -34,17 +34,17 @@ DisplayMux 使用 MCCS 的 VCP `0x60` 控制輸入來源，但介面不會要求
 
 | 介面名稱 | Port 類型 |
 | --- | --- |
-| VGA 1／2 | VGA |
-| DVI 1／2 | DVI |
-| DP 1／2 | DisplayPort |
+| VGA | VGA |
+| DVI | DVI |
+| DP | DisplayPort |
 | HDMI 1／2 | HDMI |
 | Type-C | USB Type-C |
 
 這些只是常見名稱，不是 DisplayMux 的固定硬體假設。不同螢幕可能使用其他值；capabilities 宣告的未知有效值會顯示為「其他輸入」，原始值仍會在程式內部保留供切換使用。USB-C 沒有跨廠商一致的 VCP 對照，因此無法確認為 Type-C 的廠商值不會被強行誤標。
 
-選取共用螢幕時，DisplayMux 只執行不改變畫面的 DDC/CI 讀取：先讀取目前 VCP `0x60` 作為本機輸入，再解析 capabilities 中的 `vcp(60(...))` 清單。程式不會逐一切換 Port 探測，因此不會為了偵測製造黑畫面。若螢幕、HUB、Dock 或轉接路徑無法提供 capabilities，介面會退回上述 VGA、DVI、DP、HDMI 與 Type-C 等常見輸入，同時繼續排除已分配的 Port。
+選取共用螢幕時，DisplayMux 只執行不改變畫面的 DDC/CI 讀取：先讀取目前 VCP `0x60` 作為本機輸入，再解析 capabilities 中的 `vcp(60(...))` 清單。程式不會逐一切換 Port 探測，因此不會為了偵測製造黑畫面。若螢幕、HUB、Dock 或轉接路徑無法提供 capabilities，介面只會退回常見的 VGA、DVI、DP、HDMI 1、HDMI 2 與 Type-C，同時繼續排除已分配的 Port。
 
-DDC/CI 能確認的是「目前正在顯示的本機輸入」，以及螢幕自行宣告的支援值。它無法可靠判斷另一台電腦實際插在哪個尚未使用的 Port，所以遠端主機的 Port 仍需由使用者從過濾後清單選擇。若 capabilities 資料不完整或錯誤，請以螢幕 OSD 或廠商手冊為準。
+DDC/CI 能確認的是各台電腦目前正在顯示的本機輸入，以及螢幕自行宣告的支援值。加入另一台 DisplayMux 主機時，若配對密碼驗證成功，而且對方選取的完整 EDID 指紋與本機共用螢幕完全一致，DisplayMux 會直接採用對方已偵測的本機 Port；不同螢幕、未通過驗證、Port 已被占用或資料不完整時仍要求使用者手動選擇，不會猜測連接位置。
 
 更換螢幕、線材或連接埠後，應重新執行偵測並確認共用螢幕及每台主機的輸入來源。DisplayMux 不會用舊型號或「主螢幕」的概念自動替代無法辨識的目標。
 

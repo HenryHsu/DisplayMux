@@ -151,6 +151,7 @@ const en = {
   "toast.monitorSelectFailed": "Unable to select display",
   "toast.peerAdded": "Host added",
   "toast.peerAddedBody": "Assign this host's display input and save the settings.",
+  "toast.peerPortDetected": "Verified the same shared display and selected {port} automatically.",
   "toast.peerAddFailed": "Unable to add host",
   "toast.peerRemoveFailed": "Unable to remove host",
   "toast.settingsFailed": "Settings were not saved",

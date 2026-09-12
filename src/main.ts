@@ -99,12 +99,8 @@ type UpdateDownloadEvent =
   | { event: "finished" };
 
 const standardInputs: InputOption[] = [
-  [0x01, "VGA 1"], [0x02, "VGA 2"], [0x03, "DVI 1"], [0x04, "DVI 2"],
-  [0x05, t("input.composite1")], [0x06, t("input.composite2")],
-  [0x07, "S-Video 1"], [0x08, "S-Video 2"], [0x09, t("input.tuner1")],
-  [0x0a, t("input.tuner2")], [0x0b, t("input.tuner3")], [0x0c, t("input.component1")],
-  [0x0d, t("input.component2")], [0x0e, t("input.component3")],
-  [0x0f, "DP 1"], [0x10, "DP 2"], [0x11, "HDMI 1"], [0x12, "HDMI 2"], [0x1b, "Type-C"],
+  [0x01, "VGA"], [0x03, "DVI"], [0x0f, "DP"],
+  [0x11, "HDMI 1"], [0x12, "HDMI 2"], [0x1b, "Type-C"],
 ].map(([value, name]) => ({ value: value as number, name: name as string }));
 
 const previewSettings: AppSettings = {
@@ -657,7 +653,13 @@ async function selectMonitor(monitorId: string): Promise<void> {
 }
 
 async function addPeer(peerId: string): Promise<void> {
-  try { settings = await invoke<AppSettings>("select_peer", { peerId }); renderState(); showToast(t("toast.peerAdded"), t("toast.peerAddedBody")); }
+  try {
+    const sharedKey = document.querySelector<HTMLInputElement>("#shared-key")?.value ?? "";
+    settings = await invoke<AppSettings>("select_peer", { peerId, sharedKey });
+    const added = settings.peers.find((peer) => peer.id === peerId);
+    renderState();
+    showToast(t("toast.peerAdded"), added?.input == null ? t("toast.peerAddedBody") : t("toast.peerPortDetected", { port: inputName(added.input) }));
+  }
   catch (error) { showToast(t("toast.peerAddFailed"), String(error), true); }
 }
 

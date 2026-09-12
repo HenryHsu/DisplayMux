@@ -11,10 +11,11 @@ use std::{
 };
 
 use displaymux_core::{
-    AgentAction, AgentClient, AgentResponse, AgentServer, DestinationHost, DiscoveredPeer,
-    DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService, MacAddress,
-    MdnsPeerDiscovery, MonitorControl, MonitorDescriptor, MonitorFingerprint, PeerDiscovery,
-    PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget, DEFAULT_AGENT_PORT,
+    AgentAction, AgentClient, AgentDisplayRoute, AgentResponse, AgentServer, DestinationHost,
+    DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService,
+    MacAddress, MdnsPeerDiscovery, MonitorControl, MonitorDescriptor, MonitorFingerprint,
+    PeerDiscovery, PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget,
+    DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Manager, State};
@@ -64,7 +65,9 @@ fn ui_text(zh_tw: &'static str, en: &'static str) -> &'static str {
 
 fn localized_input_name(input: DisplayInput) -> String {
     let standard_name = match (UiLocale::current(), input.value()) {
-        (_, 0x0f) => Some("DP 1"),
+        (_, 0x01) => Some("VGA"),
+        (_, 0x03) => Some("DVI"),
+        (_, 0x0f) => Some("DP"),
         (_, 0x10) => Some("DP 2"),
         (_, 0x1b) => Some("Type-C"),
         (UiLocale::TraditionalChinese, 0x05) => Some("複合視訊 1"),
@@ -346,7 +349,11 @@ async fn discover_peers(state: State<'_, AppRuntime>) -> Result<Vec<DiscoveredPe
 }
 
 #[tauri::command]
-fn select_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
+async fn select_peer(
+    peer_id: String,
+    shared_key: Option<String>,
+    state: State<'_, AppRuntime>,
+) -> Result<AppSettings, String> {
     let discovery = state.discovery.as_ref().ok_or_else(|| {
         ui_text(
             "區域網路搜尋目前不可用",
@@ -368,6 +375,24 @@ fn select_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSetti
         })?;
     let mut settings = read_settings(&state)?;
     upsert_discovered_peer(&mut settings, &peer);
+    let route = settings
+        .peers
+        .iter()
+        .find(|route| route.id == peer.id)
+        .cloned()
+        .expect("peer was just inserted");
+    let query_key = shared_key
+        .filter(|value| has_valid_shared_key(value))
+        .unwrap_or_else(|| settings.shared_key.clone());
+    if has_valid_shared_key(&query_key) {
+        let mut query_settings = settings.clone();
+        query_settings.shared_key = query_key;
+        if let Ok(response) = request_peer(&query_settings, &route, AgentAction::Ping).await {
+            if let Some(display_route) = response.display_route {
+                apply_verified_peer_route(&mut settings, &route.id, display_route);
+            }
+        }
+    }
     store_settings(&state, settings)
 }
 
@@ -1118,6 +1143,37 @@ fn upsert_discovered_peer(settings: &mut AppSettings, peer: &DiscoveredPeer) {
     });
 }
 
+fn apply_verified_peer_route(
+    settings: &mut AppSettings,
+    peer_id: &str,
+    route: AgentDisplayRoute,
+) -> bool {
+    let same_monitor = settings
+        .shared_monitor
+        .as_ref()
+        .is_some_and(|selected| selected.fingerprint.matches_exactly(&route.monitor));
+    if !same_monitor {
+        return false;
+    }
+    let supported = settings.supported_inputs.as_ref().map_or_else(
+        || common_input_sources().contains(&route.input),
+        |inputs| inputs.contains(&route.input),
+    );
+    let already_assigned = settings.local_input == Some(route.input)
+        || settings
+            .peers
+            .iter()
+            .any(|peer| peer.id != peer_id && peer.input == Some(route.input));
+    if !supported || already_assigned {
+        return false;
+    }
+    let Some(peer) = settings.peers.iter_mut().find(|peer| peer.id == peer_id) else {
+        return false;
+    };
+    peer.input = Some(route.input);
+    true
+}
+
 fn refresh_paired_endpoints(state: &AppRuntime, peers: &[DiscoveredPeer]) -> Result<(), String> {
     let current = read_settings_inner(state)?;
     let mut updated = current.clone();
@@ -1152,14 +1208,23 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                 let live_settings = Arc::clone(&live_settings);
                 async move {
                     match action {
-                        AgentAction::Ping => AgentResponse {
-                            ready: true,
-                            message: ui_text(
-                                "DisplayMux Agent 已就緒",
-                                "DisplayMux Agent is ready",
-                            )
-                            .to_owned(),
-                        },
+                        AgentAction::Ping => {
+                            let display_route = live_settings.read().ok().and_then(|settings| {
+                                Some(AgentDisplayRoute {
+                                    monitor: settings.shared_monitor.as_ref()?.fingerprint.clone(),
+                                    input: settings.local_input?,
+                                })
+                            });
+                            AgentResponse {
+                                ready: true,
+                                message: ui_text(
+                                    "DisplayMux Agent 已就緒",
+                                    "DisplayMux Agent is ready",
+                                )
+                                .to_owned(),
+                                display_route,
+                            }
+                        }
                         AgentAction::SwitchInput { input } => {
                             let fingerprint = live_settings.read().ok().and_then(|settings| {
                                 settings
@@ -1175,6 +1240,7 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                         "No shared display is selected on this host",
                                     )
                                     .to_owned(),
+                                    display_route: None,
                                 };
                             };
                             match tauri::async_runtime::spawn_blocking(move || {
@@ -1194,10 +1260,12 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                             localized_input_name(input)
                                         ),
                                     },
+                                    display_route: None,
                                 },
                                 Ok(Err(error)) => AgentResponse {
                                     ready: false,
                                     message: core_user_error(error),
+                                    display_route: None,
                                 },
                                 Err(error) => AgentResponse {
                                     ready: false,
@@ -1209,6 +1277,7 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                             format!("The switching task could not run: {error}")
                                         }
                                     },
+                                    display_route: None,
                                 },
                             }
                         }
@@ -1386,10 +1455,9 @@ fn monitor_inventory<C: MonitorControl>(
 }
 
 fn common_input_sources() -> Vec<DisplayInput> {
-    (1..=0x12)
-        .chain(std::iter::once(0x1b))
+    [0x01, 0x03, 0x0f, 0x11, 0x12, 0x1b]
+        .into_iter()
         .filter_map(|value| DisplayInput::new(value).ok())
-        .filter(|input| input.standard_name().is_some() || input.value() == 0x1b)
         .collect()
 }
 
@@ -1959,14 +2027,74 @@ mod tests {
             assert!(inputs.iter().any(|input| input.value() == value));
         }
         assert_eq!(
-            localized_input_name(DisplayInput::new(0x0f).unwrap()),
-            "DP 1"
+            localized_input_name(DisplayInput::new(0x01).unwrap()),
+            "VGA"
         );
+        assert_eq!(
+            localized_input_name(DisplayInput::new(0x03).unwrap()),
+            "DVI"
+        );
+        assert_eq!(localized_input_name(DisplayInput::new(0x0f).unwrap()), "DP");
         assert_eq!(
             localized_input_name(DisplayInput::new(0x1b).unwrap()),
             "Type-C"
         );
         assert!(!localized_input_name(DisplayInput::new(0x11).unwrap()).contains("0x"));
+    }
+
+    #[test]
+    fn verified_peer_route_is_applied_only_for_the_same_monitor_and_free_port() {
+        let selected = monitor("shared");
+        let mut settings = AppSettings {
+            shared_monitor: Some(SelectedMonitor::from(&selected)),
+            local_input: DisplayInput::new(0x0f).ok(),
+            supported_inputs: Some(vec![
+                DisplayInput::new(0x0f).unwrap(),
+                DisplayInput::new(0x11).unwrap(),
+                DisplayInput::new(0x12).unwrap(),
+            ]),
+            ..AppSettings::default()
+        };
+        settings.peers.push(HostRoute {
+            id: "peer".to_owned(),
+            name: "Peer".to_owned(),
+            platform: DestinationHost::Mac,
+            address: "192.168.1.20".to_owned(),
+            port: DEFAULT_AGENT_PORT,
+            mac_address: String::new(),
+            input: None,
+        });
+
+        assert!(apply_verified_peer_route(
+            &mut settings,
+            "peer",
+            AgentDisplayRoute {
+                monitor: selected.fingerprint.clone(),
+                input: DisplayInput::new(0x11).unwrap(),
+            },
+        ));
+        assert_eq!(settings.peers[0].input.unwrap().value(), 0x11);
+
+        settings.peers[0].input = None;
+        assert!(!apply_verified_peer_route(
+            &mut settings,
+            "peer",
+            AgentDisplayRoute {
+                monitor: monitor("different").fingerprint,
+                input: DisplayInput::new(0x12).unwrap(),
+            },
+        ));
+        assert!(settings.peers[0].input.is_none());
+
+        assert!(!apply_verified_peer_route(
+            &mut settings,
+            "peer",
+            AgentDisplayRoute {
+                monitor: selected.fingerprint,
+                input: DisplayInput::new(0x0f).unwrap(),
+            },
+        ));
+        assert!(settings.peers[0].input.is_none());
     }
 
     #[test]
