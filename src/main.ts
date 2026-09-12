@@ -2,7 +2,7 @@ import "@fontsource-variable/manrope";
 import {
   Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
   ExternalLink, Github, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
-  ShieldCheck, Trash2, TriangleAlert, UserRound, Zap,
+  ShieldCheck, Trash2, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -83,8 +83,14 @@ interface DiscoveredPeer {
 }
 
 interface InputOption { value: number; code: string; name: string; }
-interface OperationResult { title: string; detail: string; peerWoken: boolean; }
+interface OperationResult { title: string; detail: string; peerWoken: boolean; warning: boolean; }
 interface UpdateInfo { available: boolean; currentVersion: string; version: string | null; notes: string | null; }
+type SwitchProgressEvent =
+  | { event: "waking"; peerName: string }
+  | { event: "checking"; peerName: string }
+  | { event: "waiting"; peerName: string; seconds: number }
+  | { event: "switching" }
+  | { event: "remoteFallback"; peerName: string };
 type UpdateDownloadEvent =
   | { event: "started"; contentLength: number | null }
   | { event: "progress"; downloaded: number; contentLength: number | null }
@@ -195,7 +201,7 @@ app.innerHTML = `
 
               <div class="form-section two-columns">
                 <label class="field"><span>配對密碼</span><div class="input-wrap"><i data-lucide="key-round"></i><input id="shared-key" type="password" minlength="8" placeholder="至少 8 個字元" /></div><small>所有主機請填入完全相同的內容。</small></label>
-                <label class="field compact"><span>喚醒等待秒數 (45 秒)</span><input id="wait-seconds" type="number" min="5" max="120" /><small>逾時後不切換，避免黑畫面。</small></label>
+                <label class="field compact"><span>喚醒等待秒數 (45 秒)</span><input id="wait-seconds" type="number" min="5" max="120" /><small>等待 Agent 就緒；逾時後會自動改用本機 DDC/CI。</small></label>
               </div>
 
               <div class="toggles-section">
@@ -239,7 +245,7 @@ app.innerHTML = `
           <div class="note-list">
             <article><span>01</span><div><h3>更換螢幕</h3><p>更換後請重新選擇共用螢幕。舊指紋找不到時，DisplayMux 會停止而不會改動其他螢幕。</p></div></article>
             <article><span>02</span><div><h3>輸入值</h3><p>DisplayMux 使用 DDC/CI VCP 0x60。常見值可自動命名，但廠商自訂值應依螢幕選單或說明書確認。</p></div></article>
-            <article><span>03</span><div><h3>安全切換與直接切換</h3><p>安全切換會先確認或喚醒目標主機；直接切換只使用本機 DDC/CI，不需要網路，但對端離線時可能黑畫面。</p></div></article>
+            <article><span>03</span><div><h3>自動切換</h3><p>DisplayMux 會先喚醒並確認目標主機，再優先使用本機 DDC/CI；網路不可用時會自動切換，不需要手動選擇模式。</p></div></article>
             <article><span>04</span><div><h3>MacBook 轉接器</h3><p>若 USB-C 或 HDMI 轉接器未轉送 DDC，可由另一台已配對、可控制螢幕的主機代為切換。</p></div></article>
           </div>
 
@@ -265,19 +271,7 @@ app.innerHTML = `
     </main>
   </div>
   <datalist id="input-values"></datalist>
-  <div class="operation-overlay" id="operation-overlay" aria-live="polite" aria-hidden="true"><div class="operation-dialog"><div class="spinner"></div><p class="section-kicker">SAFE SWITCH</p><h2 id="operation-title">正在執行</h2><p>必要時會先確認或喚醒目標主機，再切換唯一指定的共用螢幕。</p></div></div>
-  <dialog class="direct-switch-dialog" id="direct-switch-dialog" aria-labelledby="direct-switch-title" aria-describedby="direct-switch-description">
-    <div class="direct-switch-content">
-      <div class="dialog-warning-icon"><i data-lucide="triangle-alert"></i></div>
-      <p class="section-kicker">DIRECT SWITCH</p>
-      <h2 id="direct-switch-title">要直接切換螢幕嗎？</h2>
-      <p id="direct-switch-description">直接切換不會確認或喚醒目標主機。若對端離線，螢幕可能暫時黑畫面。</p>
-      <div class="direct-switch-actions">
-        <button class="scan-button" id="direct-switch-cancel" type="button">取消</button>
-        <button class="direct-switch-confirm" id="direct-switch-confirm" type="button"><i data-lucide="arrow-left-right"></i>仍要直接切換</button>
-      </div>
-    </div>
-  </dialog>
+  <div class="operation-overlay" id="operation-overlay" aria-live="polite" aria-hidden="true"><div class="operation-dialog"><div class="spinner"></div><p class="section-kicker">SMART SWITCH</p><h2 id="operation-title">正在執行</h2><p id="operation-detail">系統會自動選擇可用的喚醒、網路與 DDC/CI 路徑。</p></div></div>
   <div class="update-overlay" id="update-overlay" aria-hidden="true">
     <div class="update-dialog">
       <p class="section-kicker">SIGNED UPDATE</p>
@@ -292,7 +286,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, TriangleAlert, UserRound, Zap };
+const iconSet = { Activity, ArrowLeftRight, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
@@ -302,9 +296,6 @@ document.querySelector<HTMLButtonElement>("#refresh-button")?.addEventListener("
 document.querySelector<HTMLButtonElement>("#update-button")?.addEventListener("click", () => pendingUpdate ? showUpdateDialog(pendingUpdate) : void checkForUpdates(true));
 document.querySelector<HTMLButtonElement>("#update-cancel")?.addEventListener("click", hideUpdateDialog);
 document.querySelector<HTMLButtonElement>("#update-install")?.addEventListener("click", () => void installUpdate());
-document.querySelector<HTMLButtonElement>("#direct-switch-cancel")?.addEventListener("click", hideDirectSwitchDialog);
-document.querySelector<HTMLButtonElement>("#direct-switch-confirm")?.addEventListener("click", confirmDirectSwitch);
-document.querySelector<HTMLDialogElement>("#direct-switch-dialog")?.addEventListener("close", () => { pendingDirectSwitchTarget = null; });
 document.querySelector<HTMLButtonElement>("#scan-button")?.addEventListener("click", () => void scanPeers());
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
 document.querySelector<HTMLInputElement>("#local-input")?.addEventListener("input", renderInputHints);
@@ -317,16 +308,15 @@ document.querySelector("#peer-list")?.addEventListener("click", (event) => {
   if (button?.dataset.addPeer) void addPeer(button.dataset.addPeer);
 });
 document.querySelector("#paired-routes")?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-remove-peer]");
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-remove-peer], [data-probe-id], [data-wake-id]");
   if (button?.dataset.removePeer) void removePeer(button.dataset.removePeer);
+  if (button?.dataset.probeId) void peerCommand("probe_peer", button.dataset.probeId);
+  if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
 document.querySelector("#paired-routes")?.addEventListener("input", renderInputHints);
 document.querySelector("#host-route-grid")?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id], [data-direct-switch-id], [data-probe-id], [data-wake-id]");
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id]");
   if (button?.dataset.switchId) void switchHost(button.dataset.switchId);
-  if (button?.dataset.directSwitchId) showDirectSwitchDialog(button.dataset.directSwitchId);
-  if (button?.dataset.probeId) void peerCommand("probe_peer", button.dataset.probeId);
-  if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
 
 function showPage(page: string): void {
@@ -532,6 +522,11 @@ function renderPairedRoutes(): void {
     <div class="peer-identity">
       <strong>${escapeHtml(peer.name)}</strong>
       <span>${platformName(peer.platform)} · ${escapeHtml(peer.address)}</span>
+      <div class="peer-diagnostic-actions" aria-label="${escapeHtml(peer.name)} 診斷工具">
+        <button class="text-button" type="button" data-probe-id="${escapeHtml(peer.id)}">測試連線</button>
+        <span class="tool-sep">·</span>
+        <button class="text-button" type="button" data-wake-id="${escapeHtml(peer.id)}" ${peer.macAddress.trim() ? "" : "disabled"}>送出喚醒</button>
+      </div>
     </div>
     <div class="paired-route-right">
       <label class="paired-input-wrap">
@@ -577,17 +572,10 @@ function renderHostRoutes(): void {
             <span class="active-toggle-indicator"></span>
           </div>
         ` : `
-          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || !dashboard.ddcAvailable ? "disabled" : ""}>
+          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || (!dashboard.ddcAvailable && !dashboard.agentConfigured) ? "disabled" : ""}>
             <i data-lucide="arrow-left-right"></i>
-            <span>安全切換至此主機</span>
+            <span>切換至此主機</span>
           </button>
-          <div class="route-tools">
-            <button class="text-button" type="button" data-direct-switch-id="${escapeHtml(route.id)}" ${route.input == null || !dashboard.ddcAvailable ? "disabled" : ""}>直接切換</button>
-            <span class="tool-sep">·</span>
-            <button class="text-button" type="button" data-probe-id="${escapeHtml(route.id)}">測試連線</button>
-            <span class="tool-sep">·</span>
-            <button class="text-button" type="button" data-wake-id="${escapeHtml(route.id)}">送出喚醒</button>
-          </div>
         `}
       </article>
     `;
@@ -646,37 +634,29 @@ async function saveSettings(event: SubmitEvent): Promise<void> {
 }
 
 async function switchHost(targetId: string): Promise<void> {
-  showOperation("正在確認主機與共用螢幕");
-  try { const result = await invoke<OperationResult>("switch_host", { targetId, force: false }); showToast(result.title, result.detail); }
-  catch (error) { showToast("安全切換未執行", String(error), true); }
-  finally { hideOperation(); }
-}
-
-async function directSwitchHost(targetId: string): Promise<void> {
-  showOperation("正在直接切換本機 DDC/CI");
-  try { const result = await invoke<OperationResult>("switch_host", { targetId, force: true }); showToast(result.title, result.detail, true); }
-  catch (error) { showToast("直接切換失敗", String(error), true); }
-  finally { hideOperation(); }
-}
-
-let pendingDirectSwitchTarget: string | null = null;
-
-function showDirectSwitchDialog(targetId: string): void {
-  const dialog = document.querySelector<HTMLDialogElement>("#direct-switch-dialog");
-  if (!dialog) return;
-  pendingDirectSwitchTarget = targetId;
-  if (!dialog.open) dialog.showModal();
-  document.querySelector<HTMLButtonElement>("#direct-switch-cancel")?.focus();
-}
-
-function hideDirectSwitchDialog(): void {
-  document.querySelector<HTMLDialogElement>("#direct-switch-dialog")?.close();
-}
-
-function confirmDirectSwitch(): void {
-  const targetId = pendingDirectSwitchTarget;
-  hideDirectSwitchDialog();
-  if (targetId) void directSwitchHost(targetId);
+  showOperation("正在準備切換", "系統正在選擇可用的喚醒、網路與 DDC/CI 路徑。");
+  const onEvent = new Channel<SwitchProgressEvent>();
+  onEvent.onmessage = (event) => {
+    if (event.event === "waking") {
+      showOperation(`正在喚醒 ${event.peerName}`, "正在嘗試送出 Wake-on-LAN，接著會確認目標主機是否就緒。");
+    } else if (event.event === "checking") {
+      showOperation(`正在確認 ${event.peerName}`, "正在檢查區域網路上的 DisplayMux Agent。");
+    } else if (event.event === "waiting") {
+      showOperation(`正在等待 ${event.peerName}`, `最多等待 ${event.seconds} 秒；逾時後會自動改用本機 DDC/CI。`);
+    } else if (event.event === "remoteFallback") {
+      showOperation(`正由 ${event.peerName} 代為切換`, "本機 DDC/CI 無法執行，正在使用已驗證的遠端 Agent。");
+    } else {
+      showOperation("正在切換共用螢幕", "優先使用這台電腦的 DDC/CI 控制唯一指定的螢幕。");
+    }
+  };
+  try {
+    const result = await invoke<OperationResult>("switch_host", { targetId, onEvent });
+    showToast(result.title, result.detail, result.warning);
+  } catch (error) {
+    showToast("切換失敗", String(error), true);
+  } finally {
+    hideOperation();
+  }
 }
 
 async function peerCommand(command: "probe_peer" | "wake_peer", peerId: string): Promise<void> {
@@ -783,7 +763,11 @@ function escapeHtml(value: string): string { return value.replace(/[&<>'"]/g, (c
 function cssEscape(value: string): string { return typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&"); }
 function setText(selector: string, value: string): void { const element = document.querySelector(selector); if (element) element.textContent = value; }
 function setInput(selector: string, value: string): void { const element = document.querySelector<HTMLInputElement>(selector); if (element) element.value = value; }
-function showOperation(title: string): void { setText("#operation-title", title); document.querySelector("#operation-overlay")?.classList.add("is-visible"); }
+function showOperation(title: string, detail?: string): void {
+  setText("#operation-title", title);
+  if (detail) setText("#operation-detail", detail);
+  document.querySelector("#operation-overlay")?.classList.add("is-visible");
+}
 function hideOperation(): void { document.querySelector("#operation-overlay")?.classList.remove("is-visible"); }
 let toastTimer = 0;
 function showToast(title: string, detail: string, warning = false): void {

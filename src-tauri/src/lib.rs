@@ -177,6 +177,45 @@ struct OperationResult {
     title: String,
     detail: String,
     peer_woken: bool,
+    warning: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "event",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum SwitchProgress {
+    Waking { peer_name: String },
+    Checking { peer_name: String },
+    Waiting { peer_name: String, seconds: u64 },
+    Switching,
+    RemoteFallback { peer_name: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NetworkPreparation {
+    NotRequired,
+    Ready { wake_sent: bool },
+    Unavailable { wake_sent: bool, reason: String },
+}
+
+impl NetworkPreparation {
+    fn peer_woken(&self) -> bool {
+        matches!(
+            self,
+            Self::Ready { wake_sent: true }
+                | Self::Unavailable {
+                    wake_sent: true,
+                    ..
+                }
+        )
+    }
+
+    fn warning(&self) -> bool {
+        matches!(self, Self::Unavailable { .. })
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -293,6 +332,7 @@ async fn save_settings(
         title: "設定已儲存".to_owned(),
         detail: "共用螢幕、各主機輸入與配對設定已更新。".to_owned(),
         peer_woken: false,
+        warning: false,
     })
 }
 
@@ -450,6 +490,7 @@ async fn probe_peer(
         title: format!("{} 已連線", peer.name),
         detail: response.message,
         peer_woken: false,
+        warning: false,
     })
 }
 
@@ -465,36 +506,37 @@ async fn wake_peer(
         title: format!("已送出喚醒訊號給 {}", peer.name),
         detail: "主機是否能喚醒仍取決於電源與網路設定。".to_owned(),
         peer_woken: true,
+        warning: false,
     })
 }
 
 #[tauri::command]
 async fn switch_host(
     target_id: String,
-    force: bool,
+    on_event: Channel<SwitchProgress>,
     state: State<'_, AppRuntime>,
 ) -> Result<OperationResult, String> {
     let settings = read_settings(&state)?;
-    let input = if target_id == "local" {
+    let target = if target_id == "local" {
+        None
+    } else {
+        Some(find_peer(&settings, &target_id)?)
+    };
+    let input = if let Some(peer) = target {
+        peer.input
+            .ok_or_else(|| "尚未設定這台主機使用的螢幕輸入".to_owned())?
+    } else {
         settings
             .local_input
             .ok_or_else(|| "尚未設定這台主機使用的螢幕輸入".to_owned())?
-    } else {
-        find_peer(&settings, &target_id)?
-            .input
-            .ok_or_else(|| "尚未設定這台主機使用的螢幕輸入".to_owned())?
     };
-    let mut peer_woken = false;
-    if requires_network_preflight(&target_id, force) {
-        let target = find_peer(&settings, &target_id)?;
-        peer_woken = prepare_safe_switch(&settings, target).await?;
-    }
+    let preparation = match target {
+        Some(peer) => prepare_automatic_switch(&settings, peer, &on_event).await,
+        None => NetworkPreparation::NotRequired,
+    };
+    let _ = on_event.send(SwitchProgress::Switching);
     match run_local_switch(&settings, input) {
-        Ok(outcome) => Ok(outcome_result(
-            outcome,
-            peer_woken,
-            force && target_id != "local",
-        )),
+        Ok(outcome) => Ok(outcome_result(outcome, &preparation)),
         Err(local_error) => {
             let executor = if target_id == "local" {
                 (settings.peers.len() == 1).then(|| &settings.peers[0])
@@ -504,6 +546,9 @@ async fn switch_host(
             .ok_or_else(|| {
                 format!("本機無法切換，而且沒有其他已配對主機可代為執行：{local_error}")
             })?;
+            let _ = on_event.send(SwitchProgress::RemoteFallback {
+                peer_name: executor.name.clone(),
+            });
             let response = request_peer(&settings, executor, AgentAction::SwitchInput { input })
                 .await
                 .map_err(|remote_error| {
@@ -515,31 +560,26 @@ async fn switch_host(
             Ok(OperationResult {
                 title: format!("已由 {} 執行切換", executor.name),
                 detail: response.message,
-                peer_woken,
+                peer_woken: preparation.peer_woken(),
+                warning: false,
             })
         }
     }
 }
 
-fn requires_network_preflight(target_id: &str, direct: bool) -> bool {
-    target_id != "local" && !direct
-}
-
-fn outcome_result(
-    outcome: SwitchOutcome,
-    peer_woken: bool,
-    direct_without_readiness_check: bool,
-) -> OperationResult {
+fn outcome_result(outcome: SwitchOutcome, preparation: &NetworkPreparation) -> OperationResult {
     let mut result = match outcome {
         SwitchOutcome::DryRun { .. } => OperationResult {
             title: "檢查完成".to_owned(),
             detail: "未變更螢幕輸入。".to_owned(),
-            peer_woken,
+            peer_woken: preparation.peer_woken(),
+            warning: preparation.warning(),
         },
         SwitchOutcome::AlreadySelected { target, input } => OperationResult {
             title: "已在指定輸入".to_owned(),
             detail: format!("{} 已使用 {}。", target.name, input.display_name()),
-            peer_woken,
+            peer_woken: preparation.peer_woken(),
+            warning: preparation.warning(),
         },
         SwitchOutcome::Switched {
             target,
@@ -553,41 +593,71 @@ fn outcome_result(
                 previous.display_name(),
                 selected.display_name()
             ),
-            peer_woken,
+            peer_woken: preparation.peer_woken(),
+            warning: preparation.warning(),
         },
     };
-    if direct_without_readiness_check {
-        result.title = "已直接切換共用螢幕".to_owned();
-        result
-            .detail
-            .push_str(" 未確認目標主機是否就緒；若該主機離線，螢幕可能暫時呈現黑畫面。");
+    if let NetworkPreparation::Unavailable {
+        wake_sent, reason, ..
+    } = preparation
+    {
+        let wake_detail = if *wake_sent {
+            "已先送出喚醒訊號，但"
+        } else {
+            "無法送出喚醒訊號，且"
+        };
+        result.detail.push_str(&format!(
+            " {wake_detail}無法透過區域網路確認目標主機（{reason}）；已自動改用本機 DDC/CI。若目標主機尚未就緒，螢幕可能暫時黑畫面。"
+        ));
     }
     result
 }
 
-async fn prepare_safe_switch(settings: &AppSettings, peer: &HostRoute) -> Result<bool, String> {
+async fn prepare_automatic_switch(
+    settings: &AppSettings,
+    peer: &HostRoute,
+    on_event: &Channel<SwitchProgress>,
+) -> NetworkPreparation {
+    let _ = on_event.send(SwitchProgress::Waking {
+        peer_name: peer.name.clone(),
+    });
+    let wake_result = wake_route(settings, peer).await;
+    let wake_sent = wake_result.is_ok();
+
+    let _ = on_event.send(SwitchProgress::Checking {
+        peer_name: peer.name.clone(),
+    });
     if !has_valid_shared_key(&settings.shared_key) {
-        return Err(format!(
-            "網路 Agent 尚未設定至少 {MIN_SHARED_KEY_LENGTH} 個字元的配對密碼。可改用「直接切換」；本機 DDC/CI 不需要配對密碼，但對端離線時可能黑畫面。"
-        ));
+        return NetworkPreparation::Unavailable {
+            wake_sent,
+            reason: format!("網路 Agent 尚未設定至少 {MIN_SHARED_KEY_LENGTH} 個字元的配對密碼"),
+        };
     }
     if request_peer(settings, peer, AgentAction::Ping)
         .await
         .is_ok()
     {
-        return Ok(false);
+        return NetworkPreparation::Ready { wake_sent };
     }
 
-    if let Err(error) = wake_route(settings, peer).await {
-        return Err(format!(
-            "無法確認 {} 已就緒，且無法自動喚醒（{}）。可改用「直接切換」，但對端離線時可能黑畫面。",
-            peer.name, error
-        ));
+    if let Err(wake_error) = wake_result {
+        return NetworkPreparation::Unavailable {
+            wake_sent: false,
+            reason: format!("{}，且 Agent 目前沒有回應", wake_error),
+        };
     }
-    wait_until_peer_ready(settings, peer)
-        .await
-        .map_err(|error| format!("{error} 可改用「直接切換」，但對端離線時可能黑畫面。"))?;
-    Ok(true)
+
+    let _ = on_event.send(SwitchProgress::Waiting {
+        peer_name: peer.name.clone(),
+        seconds: settings.wait_seconds.clamp(5, 120),
+    });
+    match wait_until_peer_ready(settings, peer).await {
+        Ok(()) => NetworkPreparation::Ready { wake_sent: true },
+        Err(reason) => NetworkPreparation::Unavailable {
+            wake_sent: true,
+            reason,
+        },
+    }
 }
 
 async fn wait_until_peer_ready(settings: &AppSettings, peer: &HostRoute) -> Result<(), String> {
@@ -602,7 +672,7 @@ async fn wait_until_peer_ready(settings: &AppSettings, peer: &HostRoute) -> Resu
         }
     }
     Err(format!(
-        "已送出喚醒訊號，但 {} 在 {} 秒內沒有回應；為避免黑畫面，尚未切換螢幕",
+        "{} 在送出喚醒訊號後 {} 秒內仍沒有回應",
         peer.name, attempts
     ))
 }
@@ -1348,10 +1418,15 @@ mod tests {
     }
 
     #[test]
-    fn direct_switch_bypasses_network_preflight_but_safe_switch_does_not() {
-        assert!(requires_network_preflight("peer", false));
-        assert!(!requires_network_preflight("peer", true));
-        assert!(!requires_network_preflight("local", false));
+    fn automatic_switch_tracks_wake_and_network_fallback_state() {
+        assert!(!NetworkPreparation::NotRequired.peer_woken());
+        assert!(!NetworkPreparation::Ready { wake_sent: true }.warning());
+        assert!(NetworkPreparation::Ready { wake_sent: true }.peer_woken());
+        assert!(NetworkPreparation::Unavailable {
+            wake_sent: false,
+            reason: "offline".to_owned(),
+        }
+        .warning());
     }
 
     #[test]
@@ -1486,17 +1561,21 @@ mod tests {
     }
 
     #[test]
-    fn direct_switch_result_always_warns_about_the_black_screen_risk() {
+    fn automatic_offline_fallback_explains_the_black_screen_risk() {
         let target = monitor("external");
         let input = DisplayInput::new(0x11).unwrap();
+        let preparation = NetworkPreparation::Unavailable {
+            wake_sent: true,
+            reason: "Agent 沒有回應".to_owned(),
+        };
         let result = outcome_result(
             SwitchOutcome::AlreadySelected { target, input },
-            false,
-            true,
+            &preparation,
         );
 
-        assert!(result.title.contains("直接切換"));
-        assert!(result.detail.contains("未確認目標主機"));
+        assert!(result.warning);
+        assert!(result.peer_woken);
+        assert!(result.detail.contains("已自動改用本機 DDC/CI"));
         assert!(result.detail.contains("黑畫面"));
     }
 
