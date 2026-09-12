@@ -1,13 +1,13 @@
 import "@fontsource-variable/manrope";
 import {
   Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
-  ExternalLink, Github, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
+  ChevronDown, ExternalLink, Github, Languages, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
   ShieldCheck, Trash2, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import packageMetadata from "../package.json";
-import { locale, t } from "./i18n";
+import { locale, localePreference, setLocalePreference, t } from "./i18n";
 import "./styles.css";
 
 type Platform = "windows" | "mac";
@@ -129,9 +129,21 @@ document.documentElement.lang = locale;
 app.innerHTML = `
   <div class="app-shell">
     <aside class="sidebar" aria-label="${t("nav.aria")}">
-      <div class="brand-header">
-        <div class="brand-icon"><i data-lucide="monitor"></i></div>
-        <span class="brand-title">DisplayMux</span>
+      <div class="brand-block">
+        <div class="brand-header">
+          <div class="brand-icon"><i data-lucide="monitor"></i></div>
+          <span class="brand-title">DisplayMux</span>
+        </div>
+        <label class="language-picker">
+          <i data-lucide="languages"></i>
+          <span class="sr-only">${t("language.label")}</span>
+          <select id="language-select" aria-label="${t("language.label")}">
+            <option value="system">${t("language.system")}</option>
+            <option value="en">${t("language.english")}</option>
+            <option value="zh-TW">${t("language.traditionalChinese")}</option>
+          </select>
+          <i class="language-chevron" data-lucide="chevron-down"></i>
+        </label>
       </div>
       <nav class="sidebar-nav">
         <button class="nav-button is-active" data-page="dashboard"><i data-lucide="arrow-left-right"></i><span>${t("nav.dashboard")}</span></button>
@@ -288,7 +300,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, UserRound, Zap };
+const iconSet = { Activity, ArrowLeftRight, ChevronDown, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
@@ -299,6 +311,13 @@ document.querySelector<HTMLButtonElement>("#update-button")?.addEventListener("c
 document.querySelector<HTMLButtonElement>("#update-cancel")?.addEventListener("click", hideUpdateDialog);
 document.querySelector<HTMLButtonElement>("#update-install")?.addEventListener("click", () => void installUpdate());
 document.querySelector<HTMLButtonElement>("#scan-button")?.addEventListener("click", () => void scanPeers());
+const languageSelect = document.querySelector<HTMLSelectElement>("#language-select");
+if (languageSelect) {
+  languageSelect.value = localePreference;
+  languageSelect.addEventListener("change", () => {
+    if (setLocalePreference(languageSelect.value)) window.location.reload();
+  });
+}
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
 document.querySelector<HTMLInputElement>("#local-input")?.addEventListener("input", renderInputHints);
 document.querySelector("#monitor-picker")?.addEventListener("click", (event) => {
