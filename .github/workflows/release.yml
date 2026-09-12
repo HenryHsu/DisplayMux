@@ -26,16 +26,12 @@ jobs:
         include:
           - label: Windows x64
             runner: windows-latest
-            target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
             args: ""
-          - label: macOS Apple Silicon
+          - label: macOS Universal
             runner: macos-latest
-            target: aarch64-apple-darwin
-            args: "--target aarch64-apple-darwin"
-          - label: macOS Intel
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-            args: "--target x86_64-apple-darwin"
+            rust_targets: "aarch64-apple-darwin x86_64-apple-darwin"
+            args: "--target universal-apple-darwin"
 
     steps:
       - name: Check out reviewed source
@@ -56,7 +52,7 @@ jobs:
           cache: pnpm
 
       - name: Install Rust target
-        run: rustup target add ${{ matrix.target }}
+        run: rustup target add ${{ matrix.rust_targets }}
 
       - name: Install locked frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -86,6 +82,7 @@ jobs:
           generateReleaseNotes: true
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
+          releaseAssetNamePattern: "DisplayMux-[version]-[platform]-[arch][setup][ext]"
           args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
 
   publish-release:
@@ -105,7 +102,21 @@ jobs:
         shell: bash
         run: node -p '"version=" + require("./src-tauri/tauri.conf.json").version' >> "$GITHUB_OUTPUT"
 
+      - name: Compose bilingual release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v${{ steps.app_version.outputs.version }}"
+          gh release view "$tag" --json body --jq .body > generated-notes.md
+          gh release view "$tag" --json assets --jq .assets > release-assets.json
+          node scripts/compose-release-notes.mjs \
+            --tag "$tag" \
+            --assets release-assets.json \
+            --generated generated-notes.md \
+            --output release-notes.md
+
       - name: Publish signed release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "v${{ steps.app_version.outputs.version }}" --draft=false --latest
+        run: gh release edit "v${{ steps.app_version.outputs.version }}" --notes-file release-notes.md --draft=false --latest
