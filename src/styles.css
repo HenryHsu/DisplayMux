@@ -37,6 +37,17 @@ button, input, select { font: inherit; }
 button { color: inherit; }
 body { margin: 0; min-width: 960px; min-height: 640px; overflow: hidden; background: var(--canvas); }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid rgba(19, 115, 86, 0.25); outline-offset: 2px; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* Shell Layout */
 .app-shell {
@@ -59,12 +70,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   box-shadow: var(--shadow-window);
 }
 
+.brand-block {
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .brand-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 4px 6px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 4px 6px 10px;
 }
 
 .brand-icon {
@@ -79,6 +94,47 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 .brand-icon svg { width: 20px; height: 20px; }
 .brand-title { font-size: 18px; font-weight: 800; color: #ffffff; letter-spacing: -0.02em; }
+
+.language-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  margin: 0 6px;
+  padding-left: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #aab8b2;
+}
+
+.language-picker:focus-within {
+  border-color: rgba(110, 231, 183, 0.65);
+  box-shadow: 0 0 0 3px rgba(110, 231, 183, 0.1);
+}
+
+.language-picker > svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.language-picker select {
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0 27px 0 0;
+  border: 0;
+  outline: 0;
+  appearance: none;
+  background: transparent;
+  color: #edf5f1;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.language-picker select option { color: #17211e; background: #ffffff; }
+.language-picker .language-chevron {
+  position: absolute;
+  right: 9px;
+  pointer-events: none;
+}
 
 .sidebar-nav {
   display: flex;
@@ -450,14 +506,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 .switch-button.primary svg { width: 17px; height: 17px; }
 
-.route-tools {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  padding-top: 2px;
-}
-
 .text-button {
   border: 0;
   background: transparent;
@@ -469,6 +517,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 }
 
 .text-button:hover { text-decoration: underline; }
+.text-button:disabled { color: var(--subtle); cursor: not-allowed; text-decoration: none; opacity: .65; }
 .tool-sep { color: #c4d0ca; font-size: 12px; }
 
 /* Status Summary Bar */
@@ -584,6 +633,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .monitor-item-icon {
@@ -602,6 +652,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .monitor-identity strong {
@@ -613,9 +664,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .monitor-identity span {
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .monitor-select-btn {
+  flex: 0 0 auto;
+  min-width: 82px;
   height: 32px;
   padding: 0 14px;
   border: 0;
@@ -626,6 +680,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   background: var(--accent);
   color: #ffffff;
   transition: background .16s ease;
+  white-space: nowrap;
 }
 
 .monitor-select-btn:hover { background: var(--accent-hover); }
@@ -786,6 +841,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   align-items: center;
   gap: 12px;
 }
+
+.peer-diagnostic-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.peer-diagnostic-actions .text-button { font-size: 11.5px; }
 
 .paired-input-wrap {
   display: flex;
@@ -1060,6 +1124,62 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   line-height: 1.6;
 }
 
+.about-section {
+  margin-top: 34px;
+  padding-top: 30px;
+  border-top: 1px solid var(--line);
+}
+
+.about-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 22px 0 0;
+}
+
+.about-item {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--accent-light);
+}
+
+.about-item dt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.about-item dt svg {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.about-item dd {
+  margin: 9px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.about-item a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.about-item a:hover { text-decoration: underline; }
+.about-item a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.about-item a svg { width: 13px; height: 13px; flex-shrink: 0; }
+
 /* Overlays & Dialogs */
 .operation-overlay {
   position: fixed;
@@ -1198,7 +1318,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .app-shell { grid-template-columns: 80px 1fr; }
   .brand-title, .nav-button span { display: none; }
   .sidebar { padding: 16px 8px; align-items: center; }
-  .brand-header { padding: 4px 0 16px; justify-content: center; }
+  .brand-block { width: 100%; padding-bottom: 16px; }
+  .brand-header { padding: 4px 0; justify-content: center; }
+  .language-picker { display: none; }
   .nav-button { justify-content: center; padding: 0; }
   .settings-layout { grid-template-columns: 1fr; }
   .host-route-grid { grid-template-columns: 1fr; }

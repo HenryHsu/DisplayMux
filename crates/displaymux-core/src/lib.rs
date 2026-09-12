@@ -1,4 +1,6 @@
 mod domain;
+#[cfg(any(target_os = "macos", test))]
+mod edid;
 mod error;
 mod network;
 mod port;
@@ -11,7 +13,7 @@ pub mod windows;
 
 pub use domain::{
     DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxProfile, MonitorDescriptor,
-    MonitorFingerprint, MonitorId, MonitorResolution, SwitchMode, SwitchOutcome,
+    MonitorFingerprint, MonitorId, MonitorResolution, ResolutionSource, SwitchMode, SwitchOutcome,
 };
 pub use error::DisplayMuxError;
 pub use network::{

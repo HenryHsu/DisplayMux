@@ -14,7 +14,7 @@ use displaymux_core::{
     AgentAction, AgentClient, AgentResponse, AgentServer, DestinationHost, DiscoveredPeer,
     DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService, MacAddress,
     MdnsPeerDiscovery, MonitorControl, MonitorDescriptor, MonitorFingerprint, PeerDiscovery,
-    PeerEndpoint, SwitchMode, SwitchOutcome, WakeTarget, DEFAULT_AGENT_PORT,
+    PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget, DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Manager, State};
@@ -23,7 +23,88 @@ use tauri_plugin_updater::UpdaterExt;
 use tokio::{sync::Mutex, time::sleep};
 
 static NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
+static UI_LOCALE: AtomicU64 = AtomicU64::new(0);
 const MIN_SHARED_KEY_LENGTH: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UiLocale {
+    English,
+    TraditionalChinese,
+}
+
+impl UiLocale {
+    fn current() -> Self {
+        if UI_LOCALE.load(Ordering::Relaxed) == 1 {
+            Self::TraditionalChinese
+        } else {
+            Self::English
+        }
+    }
+}
+
+fn locale_from_tag(locale: &str) -> UiLocale {
+    let normalized = locale.to_ascii_lowercase();
+    if normalized.starts_with("zh-tw")
+        || normalized.starts_with("zh-hant")
+        || normalized.starts_with("zh-hk")
+        || normalized.starts_with("zh-mo")
+    {
+        UiLocale::TraditionalChinese
+    } else {
+        UiLocale::English
+    }
+}
+
+fn ui_text(zh_tw: &'static str, en: &'static str) -> &'static str {
+    match UiLocale::current() {
+        UiLocale::TraditionalChinese => zh_tw,
+        UiLocale::English => en,
+    }
+}
+
+fn localized_input_name(input: DisplayInput) -> String {
+    let standard_name = match (UiLocale::current(), input.value()) {
+        (UiLocale::TraditionalChinese, 0x05) => Some("複合視訊 1"),
+        (UiLocale::TraditionalChinese, 0x06) => Some("複合視訊 2"),
+        (UiLocale::TraditionalChinese, 0x09) => Some("電視調諧器 1"),
+        (UiLocale::TraditionalChinese, 0x0a) => Some("電視調諧器 2"),
+        (UiLocale::TraditionalChinese, 0x0b) => Some("電視調諧器 3"),
+        (UiLocale::TraditionalChinese, 0x0c) => Some("色差視訊 1"),
+        (UiLocale::TraditionalChinese, 0x0d) => Some("色差視訊 2"),
+        (UiLocale::TraditionalChinese, 0x0e) => Some("色差視訊 3"),
+        _ => input.standard_name(),
+    };
+    match standard_name {
+        Some(name) => format!("{name} (0x{:02X})", input.value()),
+        None => match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!("自訂輸入 (0x{:02X})", input.value()),
+            UiLocale::English => format!("Custom input (0x{:02X})", input.value()),
+        },
+    }
+}
+
+#[tauri::command]
+fn set_locale(locale: String, app: AppHandle) -> Result<(), String> {
+    let selected = locale_from_tag(&locale);
+    UI_LOCALE.store(
+        u64::from(selected == UiLocale::TraditionalChinese),
+        Ordering::Relaxed,
+    );
+    #[cfg(target_os = "windows")]
+    if let Some(tray) = app.tray_by_id("displaymux") {
+        use tauri::menu::MenuBuilder;
+        let menu = MenuBuilder::new(&app)
+            .text("tray-open", ui_text("開啟 DisplayMux", "Open DisplayMux"))
+            .separator()
+            .text("tray-quit", ui_text("結束 DisplayMux", "Quit DisplayMux"))
+            .build()
+            .map_err(user_error)?;
+        tray.set_menu(Some(menu)).map_err(user_error)?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
+    Ok(())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +113,19 @@ struct SelectedMonitor {
     fingerprint: MonitorFingerprint,
     #[serde(default)]
     max_resolution: Option<displaymux_core::MonitorResolution>,
+    #[serde(default)]
+    resolution_source: Option<ResolutionSource>,
+}
+
+impl From<&MonitorDescriptor> for SelectedMonitor {
+    fn from(monitor: &MonitorDescriptor) -> Self {
+        Self {
+            name: monitor.name.clone(),
+            fingerprint: monitor.fingerprint.clone(),
+            max_resolution: monitor.max_resolution,
+            resolution_source: monitor.resolution_source,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,7 +209,7 @@ impl Default for LegacySettings {
 }
 
 struct AppRuntime {
-    settings: RwLock<AppSettings>,
+    settings: Arc<RwLock<AppSettings>>,
     settings_path: PathBuf,
     agent_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     discovery: Option<MdnsPeerDiscovery>,
@@ -129,7 +223,25 @@ struct DashboardState {
     agent_configured: bool,
     ddc_available: bool,
     monitor_status: String,
+    selection_notice: Option<String>,
     monitors: Vec<MonitorDescriptor>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MonitorSelectionChange {
+    SelectedOnlyMonitor {
+        name: String,
+    },
+    ReplacedMissingMonitor {
+        previous: String,
+        replacement: String,
+    },
+    RefreshedMetadata,
+}
+
+struct MonitorInventory {
+    detected: Vec<MonitorDescriptor>,
+    controllable: Vec<MonitorDescriptor>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -146,6 +258,45 @@ struct OperationResult {
     title: String,
     detail: String,
     peer_woken: bool,
+    warning: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "event",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum SwitchProgress {
+    Waking { peer_name: String },
+    Checking { peer_name: String },
+    Waiting { peer_name: String, seconds: u64 },
+    Switching,
+    RemoteFallback { peer_name: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NetworkPreparation {
+    NotRequired,
+    Ready { wake_sent: bool },
+    Unavailable { wake_sent: bool, reason: String },
+}
+
+impl NetworkPreparation {
+    fn peer_woken(&self) -> bool {
+        matches!(
+            self,
+            Self::Ready { wake_sent: true }
+                | Self::Unavailable {
+                    wake_sent: true,
+                    ..
+                }
+        )
+    }
+
+    fn warning(&self) -> bool {
+        matches!(self, Self::Unavailable { .. })
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -178,25 +329,38 @@ enum UpdateDownloadEvent {
 async fn discover_peers(state: State<'_, AppRuntime>) -> Result<Vec<DiscoveredPeer>, String> {
     sleep(Duration::from_millis(700)).await;
     let discovery = state.discovery.as_ref().ok_or_else(|| {
-        "無法啟動區域網路搜尋；請確認防火牆允許 DisplayMux 使用私人網路".to_owned()
+        ui_text(
+            "無法啟動區域網路搜尋；請確認防火牆允許 DisplayMux 使用私人網路",
+            "Unable to start local network discovery. Allow DisplayMux through the firewall on private networks.",
+        )
+        .to_owned()
     })?;
-    let peers = discovery.peers().map_err(user_error)?;
+    let peers = discovery.peers().map_err(core_user_error)?;
     refresh_paired_endpoints(&state, &peers)?;
     Ok(peers)
 }
 
 #[tauri::command]
 fn select_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
-    let discovery = state
-        .discovery
-        .as_ref()
-        .ok_or_else(|| "區域網路搜尋目前不可用".to_owned())?;
+    let discovery = state.discovery.as_ref().ok_or_else(|| {
+        ui_text(
+            "區域網路搜尋目前不可用",
+            "Local network discovery is unavailable",
+        )
+        .to_owned()
+    })?;
     let peer = discovery
         .peers()
-        .map_err(user_error)?
+        .map_err(core_user_error)?
         .into_iter()
         .find(|peer| peer.id == peer_id)
-        .ok_or_else(|| "這台主機已離線，請重新搜尋後再試一次".to_owned())?;
+        .ok_or_else(|| {
+            ui_text(
+                "這台主機已離線，請重新搜尋後再試一次",
+                "This host is offline. Search again and retry.",
+            )
+            .to_owned()
+        })?;
     let mut settings = read_settings(&state)?;
     upsert_discovered_peer(&mut settings, &peer);
     store_settings(&state, settings)
@@ -211,17 +375,20 @@ fn remove_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSetti
 
 #[tauri::command]
 fn select_monitor(monitor_id: String, state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
-    let monitor = enumerate_monitors()
-        .map_err(user_error)?
+    let monitor = enumerate_monitor_inventory()
+        .map_err(core_user_error)?
+        .controllable
         .into_iter()
         .find(|monitor| monitor.id.as_str() == monitor_id)
-        .ok_or_else(|| "找不到這台螢幕，請重新整理後再選擇".to_owned())?;
+        .ok_or_else(|| {
+            ui_text(
+                "找不到這台螢幕，請重新整理後再選擇",
+                "This display was not found. Refresh and select it again.",
+            )
+            .to_owned()
+        })?;
     let mut settings = read_settings(&state)?;
-    settings.shared_monitor = Some(SelectedMonitor {
-        name: monitor.name,
-        fingerprint: monitor.fingerprint,
-        max_resolution: monitor.max_resolution,
-    });
+    settings.shared_monitor = Some(SelectedMonitor::from(&monitor));
     store_settings(&state, settings)
 }
 
@@ -251,7 +418,7 @@ async fn save_settings(
     app: AppHandle,
 ) -> Result<OperationResult, String> {
     let settings = settings_for_current_build(settings);
-    validate_settings(&settings).map_err(user_error)?;
+    validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
     store_settings(&state, settings)?;
     let autostart = app.autolaunch();
@@ -262,9 +429,14 @@ async fn save_settings(
     }
     restart_agent(&state).await?;
     Ok(OperationResult {
-        title: "設定已儲存".to_owned(),
-        detail: "共用螢幕、各主機輸入與配對設定已更新。".to_owned(),
+        title: ui_text("設定已儲存", "Settings saved").to_owned(),
+        detail: ui_text(
+            "共用螢幕、各主機輸入與配對設定已更新。",
+            "The shared display, host inputs, and pairing settings were updated.",
+        )
+        .to_owned(),
         peer_woken: false,
+        warning: false,
     })
 }
 
@@ -305,7 +477,11 @@ async fn install_update(
         .await
         .map_err(update_error)?
     else {
-        return Err("目前沒有可安裝的更新".to_owned());
+        return Err(ui_text(
+            "目前沒有可安裝的更新",
+            "No update is currently available to install",
+        )
+        .to_owned());
     };
 
     let progress_events = on_event.clone();
@@ -338,26 +514,88 @@ async fn install_update(
 
 #[tauri::command]
 fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, String> {
-    let settings = read_settings(&state)?;
-    let (monitors, monitor_status) = match enumerate_monitors() {
-        Ok(monitors) => {
+    let mut settings = read_settings(&state)?;
+    let mut selection_notice = None;
+    let (monitors, monitor_status) = match enumerate_monitor_inventory() {
+        Ok(inventory) => {
+            if let Some(change) = reconcile_monitor_selection(
+                &mut settings,
+                &inventory.detected,
+                &inventory.controllable,
+            ) {
+                store_settings(&state, settings.clone())?;
+                selection_notice = match change {
+                    MonitorSelectionChange::SelectedOnlyMonitor { name } => {
+                        Some(match UiLocale::current() {
+                            UiLocale::TraditionalChinese => format!("已自動選取唯一可控制的 DDC/CI 螢幕：{name}"),
+                            UiLocale::English => format!("Automatically selected the only controllable DDC/CI display: {name}"),
+                        })
+                    }
+                    MonitorSelectionChange::ReplacedMissingMonitor {
+                        previous,
+                        replacement,
+                    } => Some(match UiLocale::current() {
+                        UiLocale::TraditionalChinese => format!("先前選取的 {previous} 已消失；已安全更新為唯一可控制的 {replacement}"),
+                        UiLocale::English => format!("Previously selected {previous} disappeared; safely selected the only controllable display, {replacement}"),
+                    }),
+                    MonitorSelectionChange::RefreshedMetadata => None,
+                };
+            }
             let selected = settings.shared_monitor.as_ref();
             let target_found = selected.is_some_and(|selected| {
-                monitors
+                inventory
+                    .controllable
                     .iter()
                     .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
             });
-            let status = match (selected, target_found, monitors.is_empty()) {
-                (None, _, _) => "尚未選擇共用螢幕；目前不會控制任何螢幕".to_owned(),
-                (Some(selected), true, _) => format!("已鎖定共用螢幕：{}", selected.name),
-                (Some(_), false, true) => "目前沒有可用的 DDC/CI 顯示器".to_owned(),
-                (Some(selected), false, false) => {
-                    format!("找不到先前選擇的共用螢幕：{}", selected.name)
-                }
+            let target_detected = selected.is_some_and(|selected| {
+                inventory
+                    .detected
+                    .iter()
+                    .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
+            });
+            let status = match (
+                selected,
+                target_found,
+                target_detected,
+                inventory.controllable.is_empty(),
+            ) {
+                (None, _, _, _) => ui_text(
+                    "尚未選擇共用螢幕；目前不會控制任何螢幕",
+                    "No shared display is selected; no display will be controlled",
+                )
+                .to_owned(),
+                (Some(selected), true, _, _) => match UiLocale::current() {
+                    UiLocale::TraditionalChinese => format!("已鎖定共用螢幕：{}", selected.name),
+                    UiLocale::English => format!("Shared display locked: {}", selected.name),
+                },
+                (Some(selected), false, true, _) => match UiLocale::current() {
+                    UiLocale::TraditionalChinese => {
+                        format!("已偵測到 {}，但目前無法讀取 DDC/CI 輸入", selected.name)
+                    }
+                    UiLocale::English => format!(
+                        "{} was detected, but its DDC/CI input cannot be read",
+                        selected.name
+                    ),
+                },
+                (Some(_), false, false, true) => ui_text(
+                    "目前沒有可用的 DDC/CI 顯示器",
+                    "No DDC/CI display is currently available",
+                )
+                .to_owned(),
+                (Some(selected), false, false, false) => match UiLocale::current() {
+                    UiLocale::TraditionalChinese => {
+                        format!("找不到先前選擇的共用螢幕：{}", selected.name)
+                    }
+                    UiLocale::English => format!(
+                        "Previously selected shared display was not found: {}",
+                        selected.name
+                    ),
+                },
             };
-            (monitors, status)
+            (inventory.controllable, status)
         }
-        Err(error) => (Vec::new(), error.to_string()),
+        Err(error) => (Vec::new(), core_user_error(error)),
     };
     let ddc_available = settings.shared_monitor.as_ref().is_some_and(|selected| {
         monitors
@@ -370,6 +608,7 @@ fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, S
         agent_configured: has_valid_shared_key(&settings.shared_key),
         ddc_available,
         monitor_status,
+        selection_notice,
         monitors,
     })
 }
@@ -381,11 +620,19 @@ async fn probe_peer(
 ) -> Result<OperationResult, String> {
     let settings = read_settings(&state)?;
     let peer = find_peer(&settings, &peer_id)?;
-    let response = request_peer(&settings, peer, AgentAction::Ping).await?;
+    request_peer(&settings, peer, AgentAction::Ping).await?;
     Ok(OperationResult {
-        title: format!("{} 已連線", peer.name),
-        detail: response.message,
+        title: match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!("{} 已連線", peer.name),
+            UiLocale::English => format!("{} connected", peer.name),
+        },
+        detail: ui_text(
+            "DisplayMux Agent 已就緒。",
+            "The DisplayMux Agent is ready.",
+        )
+        .to_owned(),
         peer_woken: false,
+        warning: false,
     })
 }
 
@@ -398,93 +645,225 @@ async fn wake_peer(
     let peer = find_peer(&settings, &peer_id)?;
     wake_route(&settings, peer).await?;
     Ok(OperationResult {
-        title: format!("已送出喚醒訊號給 {}", peer.name),
-        detail: "主機是否能喚醒仍取決於電源與網路設定。".to_owned(),
+        title: match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!("已送出喚醒訊號給 {}", peer.name),
+            UiLocale::English => format!("Wake signal sent to {}", peer.name),
+        },
+        detail: ui_text(
+            "主機是否能喚醒仍取決於電源與網路設定。",
+            "Whether the host wakes still depends on its power and network settings.",
+        )
+        .to_owned(),
         peer_woken: true,
+        warning: false,
     })
 }
 
 #[tauri::command]
 async fn switch_host(
     target_id: String,
-    force: bool,
+    on_event: Channel<SwitchProgress>,
     state: State<'_, AppRuntime>,
 ) -> Result<OperationResult, String> {
     let settings = read_settings(&state)?;
-    let input = if target_id == "local" {
-        settings
-            .local_input
-            .ok_or_else(|| "尚未設定這台主機使用的螢幕輸入".to_owned())?
+    let target = if target_id == "local" {
+        None
     } else {
-        find_peer(&settings, &target_id)?
-            .input
-            .ok_or_else(|| "尚未設定這台主機使用的螢幕輸入".to_owned())?
+        Some(find_peer(&settings, &target_id)?)
     };
-    let mut peer_woken = false;
-    if target_id != "local" && !force {
-        let target = find_peer(&settings, &target_id)?;
-        if request_peer(&settings, target, AgentAction::Ping)
-            .await
-            .is_err()
-        {
-            wake_route(&settings, target).await?;
-            peer_woken = true;
-            wait_until_peer_ready(&settings, target).await?;
-        }
-    }
+    let input = if let Some(peer) = target {
+        peer.input.ok_or_else(|| {
+            ui_text(
+                "尚未設定這台主機使用的螢幕輸入",
+                "The display input for this host is not configured",
+            )
+            .to_owned()
+        })?
+    } else {
+        settings.local_input.ok_or_else(|| {
+            ui_text(
+                "尚未設定這台主機使用的螢幕輸入",
+                "The display input for this host is not configured",
+            )
+            .to_owned()
+        })?
+    };
+    let preparation = match target {
+        Some(peer) => prepare_automatic_switch(&settings, peer, &on_event).await,
+        None => NetworkPreparation::NotRequired,
+    };
+    let _ = on_event.send(SwitchProgress::Switching);
     match run_local_switch(&settings, input) {
-        Ok(outcome) => Ok(outcome_result(outcome, peer_woken)),
+        Ok(outcome) => Ok(outcome_result(outcome, &preparation)),
         Err(local_error) => {
+            let local_error = core_user_error(local_error);
             let executor = if target_id == "local" {
-                settings.peers.first()
+                (settings.peers.len() == 1).then(|| &settings.peers[0])
             } else {
                 settings.peers.iter().find(|peer| peer.id == target_id)
             }
-            .ok_or_else(|| {
-                format!("本機無法切換，而且沒有其他已配對主機可代為執行：{local_error}")
+            .ok_or_else(|| match UiLocale::current() {
+                UiLocale::TraditionalChinese => {
+                    format!("本機無法切換，而且沒有其他已配對主機可代為執行：{local_error}")
+                }
+                UiLocale::English => format!(
+                    "Local switching failed and no other paired host can perform it: {local_error}"
+                ),
             })?;
-            let response = request_peer(&settings, executor, AgentAction::SwitchInput { input })
+            let _ = on_event.send(SwitchProgress::RemoteFallback {
+                peer_name: executor.name.clone(),
+            });
+            request_peer(&settings, executor, AgentAction::SwitchInput { input })
                 .await
-                .map_err(|remote_error| {
-                    format!(
+                .map_err(|remote_error| match UiLocale::current() {
+                    UiLocale::TraditionalChinese => format!(
                         "本機與 {} 都無法切換。本機：{}；遠端：{}",
                         executor.name, local_error, remote_error
-                    )
+                    ),
+                    UiLocale::English => format!(
+                        "Neither this computer nor {} could switch. Local: {}; remote: {}",
+                        executor.name, local_error, remote_error
+                    ),
                 })?;
             Ok(OperationResult {
-                title: format!("已由 {} 執行切換", executor.name),
-                detail: response.message,
-                peer_woken,
+                title: match UiLocale::current() {
+                    UiLocale::TraditionalChinese => format!("已由 {} 執行切換", executor.name),
+                    UiLocale::English => format!("Switch performed by {}", executor.name),
+                },
+                detail: match UiLocale::current() {
+                    UiLocale::TraditionalChinese => {
+                        format!("遠端主機已切換至 {}。", localized_input_name(input))
+                    }
+                    UiLocale::English => {
+                        format!(
+                            "The remote host switched to {}.",
+                            localized_input_name(input)
+                        )
+                    }
+                },
+                peer_woken: preparation.peer_woken(),
+                warning: false,
             })
         }
     }
 }
 
-fn outcome_result(outcome: SwitchOutcome, peer_woken: bool) -> OperationResult {
-    match outcome {
+fn outcome_result(outcome: SwitchOutcome, preparation: &NetworkPreparation) -> OperationResult {
+    let mut result = match outcome {
         SwitchOutcome::DryRun { .. } => OperationResult {
-            title: "檢查完成".to_owned(),
-            detail: "未變更螢幕輸入。".to_owned(),
-            peer_woken,
+            title: ui_text("檢查完成", "Check complete").to_owned(),
+            detail: ui_text("未變更螢幕輸入。", "The display input was not changed.").to_owned(),
+            peer_woken: preparation.peer_woken(),
+            warning: preparation.warning(),
         },
         SwitchOutcome::AlreadySelected { target, input } => OperationResult {
-            title: "已在指定輸入".to_owned(),
-            detail: format!("{} 已使用 {}。", target.name, input.display_name()),
-            peer_woken,
+            title: ui_text("已在指定輸入", "Already on the assigned input").to_owned(),
+            detail: match UiLocale::current() {
+                UiLocale::TraditionalChinese => {
+                    format!("{} 已使用 {}。", target.name, localized_input_name(input))
+                }
+                UiLocale::English => format!(
+                    "{} is already using {}.",
+                    target.name,
+                    localized_input_name(input)
+                ),
+            },
+            peer_woken: preparation.peer_woken(),
+            warning: preparation.warning(),
         },
         SwitchOutcome::Switched {
             target,
             previous,
             selected,
         } => OperationResult {
-            title: "共用螢幕已切換".to_owned(),
-            detail: format!(
-                "{} 已由 {} 切換至 {}。",
-                target.name,
-                previous.display_name(),
-                selected.display_name()
-            ),
-            peer_woken,
+            title: ui_text("共用螢幕已切換", "Shared display switched").to_owned(),
+            detail: match UiLocale::current() {
+                UiLocale::TraditionalChinese => format!(
+                    "{} 已由 {} 切換至 {}。",
+                    target.name,
+                    localized_input_name(previous),
+                    localized_input_name(selected)
+                ),
+                UiLocale::English => format!(
+                    "{} switched from {} to {}.",
+                    target.name,
+                    localized_input_name(previous),
+                    localized_input_name(selected)
+                ),
+            },
+            peer_woken: preparation.peer_woken(),
+            warning: preparation.warning(),
+        },
+    };
+    if let NetworkPreparation::Unavailable {
+        wake_sent, reason, ..
+    } = preparation
+    {
+        let wake_detail = if *wake_sent {
+            ui_text("已先送出喚醒訊號，但", "A wake signal was sent, but ")
+        } else {
+            ui_text(
+                "無法送出喚醒訊號，且",
+                "A wake signal could not be sent, and ",
+            )
+        };
+        result.detail.push_str(&match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!(" {wake_detail}無法透過區域網路確認目標主機（{reason}）；已自動改用本機 DDC/CI。若目標主機尚未就緒，螢幕可能暫時黑畫面。"),
+            UiLocale::English => format!(" {wake_detail}the target host could not be confirmed over the local network ({reason}); local DDC/CI was selected automatically. The display may be temporarily blank if the target host is not ready."),
+        });
+    }
+    result
+}
+
+async fn prepare_automatic_switch(
+    settings: &AppSettings,
+    peer: &HostRoute,
+    on_event: &Channel<SwitchProgress>,
+) -> NetworkPreparation {
+    let _ = on_event.send(SwitchProgress::Waking {
+        peer_name: peer.name.clone(),
+    });
+    let wake_result = wake_route(settings, peer).await;
+    let wake_sent = wake_result.is_ok();
+
+    let _ = on_event.send(SwitchProgress::Checking {
+        peer_name: peer.name.clone(),
+    });
+    if !has_valid_shared_key(&settings.shared_key) {
+        return NetworkPreparation::Unavailable {
+            wake_sent,
+            reason: match UiLocale::current() {
+                UiLocale::TraditionalChinese => format!("網路 Agent 尚未設定至少 {MIN_SHARED_KEY_LENGTH} 個字元的配對密碼"),
+                UiLocale::English => format!("The network Agent does not have a pairing password of at least {MIN_SHARED_KEY_LENGTH} characters"),
+            },
+        };
+    }
+    if request_peer(settings, peer, AgentAction::Ping)
+        .await
+        .is_ok()
+    {
+        return NetworkPreparation::Ready { wake_sent };
+    }
+
+    if let Err(wake_error) = wake_result {
+        return NetworkPreparation::Unavailable {
+            wake_sent: false,
+            reason: match UiLocale::current() {
+                UiLocale::TraditionalChinese => format!("{}，且 Agent 目前沒有回應", wake_error),
+                UiLocale::English => format!("{wake_error}, and the Agent is not responding"),
+            },
+        };
+    }
+
+    let _ = on_event.send(SwitchProgress::Waiting {
+        peer_name: peer.name.clone(),
+        seconds: settings.wait_seconds.clamp(5, 120),
+    });
+    match wait_until_peer_ready(settings, peer).await {
+        Ok(()) => NetworkPreparation::Ready { wake_sent: true },
+        Err(reason) => NetworkPreparation::Unavailable {
+            wake_sent: true,
+            reason,
         },
     }
 }
@@ -500,10 +879,15 @@ async fn wait_until_peer_ready(settings: &AppSettings, peer: &HostRoute) -> Resu
             return Ok(());
         }
     }
-    Err(format!(
-        "已送出喚醒訊號，但 {} 在 {} 秒內沒有回應；為避免黑畫面，尚未切換螢幕",
-        peer.name, attempts
-    ))
+    Err(match UiLocale::current() {
+        UiLocale::TraditionalChinese => {
+            format!("{} 在送出喚醒訊號後 {} 秒內仍沒有回應", peer.name, attempts)
+        }
+        UiLocale::English => format!(
+            "{} did not respond within {} seconds after the wake signal",
+            peer.name, attempts
+        ),
+    })
 }
 
 async fn request_peer(
@@ -511,16 +895,21 @@ async fn request_peer(
     peer: &HostRoute,
     action: AgentAction,
 ) -> Result<AgentResponse, String> {
-    let endpoint = route_endpoint(peer).map_err(user_error)?;
+    let endpoint = route_endpoint(peer).map_err(core_user_error)?;
     if !has_valid_shared_key(&settings.shared_key) {
-        return Err(format!(
-            "請先設定至少 {MIN_SHARED_KEY_LENGTH} 個字元的配對密碼"
-        ));
+        return Err(match UiLocale::current() {
+            UiLocale::TraditionalChinese => {
+                format!("請先設定至少 {MIN_SHARED_KEY_LENGTH} 個字元的配對密碼")
+            }
+            UiLocale::English => format!(
+                "Configure a pairing password of at least {MIN_SHARED_KEY_LENGTH} characters first"
+            ),
+        });
     }
     let response = AgentClient::new(endpoint, Arc::<[u8]>::from(settings.shared_key.as_bytes()))
         .request(action, next_nonce())
         .await
-        .map_err(user_error)?;
+        .map_err(core_user_error)?;
     if response.ready {
         Ok(response)
     } else {
@@ -530,14 +919,14 @@ async fn request_peer(
 
 async fn wake_route(settings: &AppSettings, peer: &HostRoute) -> Result<(), String> {
     if peer.mac_address.trim().is_empty() {
-        return Err(format!(
-            "{} 沒有提供可用的 MAC 位址，因此無法使用 Wake-on-LAN；主機醒著時仍可切換",
-            peer.name
-        ));
+        return Err(match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!("{} 沒有提供可用的 MAC 位址，因此無法使用 Wake-on-LAN；主機醒著時仍可切換", peer.name),
+            UiLocale::English => format!("{} has no usable MAC address, so Wake-on-LAN is unavailable; switching still works while the host is awake", peer.name),
+        });
     }
-    let mac_address = MacAddress::from_str(&peer.mac_address).map_err(user_error)?;
-    let broadcast_address =
-        Ipv4Addr::from_str(&settings.broadcast_ip).map_err(|_| "廣播位址格式無效".to_owned())?;
+    let mac_address = MacAddress::from_str(&peer.mac_address).map_err(core_user_error)?;
+    let broadcast_address = Ipv4Addr::from_str(&settings.broadcast_ip)
+        .map_err(|_| ui_text("廣播位址格式無效", "Invalid broadcast address").to_owned())?;
     WakeTarget {
         mac_address,
         broadcast_address,
@@ -545,12 +934,16 @@ async fn wake_route(settings: &AppSettings, peer: &HostRoute) -> Result<(), Stri
     }
     .wake()
     .await
-    .map_err(user_error)
+    .map_err(core_user_error)
 }
 
 fn route_endpoint(peer: &HostRoute) -> Result<PeerEndpoint, DisplayMuxError> {
-    let address = IpAddr::from_str(&peer.address)
-        .map_err(|_| DisplayMuxError::PeerUnavailable(format!("{} 的 IP 位址無效", peer.name)))?;
+    let address = IpAddr::from_str(&peer.address).map_err(|_| {
+        DisplayMuxError::PeerUnavailable(match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!("{} 的 IP 位址無效", peer.name),
+            UiLocale::English => format!("{} has an invalid IP address", peer.name),
+        })
+    })?;
     Ok(PeerEndpoint {
         address,
         port: peer.port,
@@ -562,13 +955,23 @@ fn find_peer<'a>(settings: &'a AppSettings, peer_id: &str) -> Result<&'a HostRou
         .peers
         .iter()
         .find(|peer| peer.id == peer_id)
-        .ok_or_else(|| "找不到這台已配對主機，請重新搜尋並加入".to_owned())
+        .ok_or_else(|| {
+            ui_text(
+                "找不到這台已配對主機，請重新搜尋並加入",
+                "This paired host was not found. Search for it and add it again.",
+            )
+            .to_owned()
+        })
 }
 
 fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
     if settings.local_host != local_host() {
         return Err(DisplayMuxError::Backend(
-            "這台電腦的主機類型必須由作業系統自動判定".to_owned(),
+            ui_text(
+                "這台電腦的主機類型必須由作業系統自動判定",
+                "This computer's host type must be determined by the operating system",
+            )
+            .to_owned(),
         ));
     }
     if settings
@@ -580,7 +983,11 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
         })
     {
         return Err(DisplayMuxError::Backend(
-            "螢幕輸入值必須介於 0x01 與 0xFF".to_owned(),
+            ui_text(
+                "螢幕輸入值必須介於 0x01 與 0xFF",
+                "Display input values must be between 0x01 and 0xFF",
+            )
+            .to_owned(),
         ));
     }
     for peer in &settings.peers {
@@ -589,12 +996,20 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
             MacAddress::from_str(&peer.mac_address)?;
         }
     }
-    Ipv4Addr::from_str(&settings.broadcast_ip)
-        .map_err(|_| DisplayMuxError::WakeFailed("廣播位址格式無效".to_owned()))?;
+    Ipv4Addr::from_str(&settings.broadcast_ip).map_err(|_| {
+        DisplayMuxError::WakeFailed(
+            ui_text("廣播位址格式無效", "Invalid broadcast address").to_owned(),
+        )
+    })?;
     if !settings.shared_key.is_empty() && !has_valid_shared_key(&settings.shared_key) {
-        return Err(DisplayMuxError::Backend(format!(
-            "配對密碼至少需要 {MIN_SHARED_KEY_LENGTH} 個字元"
-        )));
+        return Err(DisplayMuxError::Backend(match UiLocale::current() {
+            UiLocale::TraditionalChinese => {
+                format!("配對密碼至少需要 {MIN_SHARED_KEY_LENGTH} 個字元")
+            }
+            UiLocale::English => format!(
+                "The pairing password must contain at least {MIN_SHARED_KEY_LENGTH} characters"
+            ),
+        }));
     }
     Ok(())
 }
@@ -646,22 +1061,36 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
         SocketAddr::from(([0, 0, 0, 0], DEFAULT_AGENT_PORT)),
         Arc::<[u8]>::from(settings.shared_key.as_bytes()),
     );
-    let selected_monitor = settings.shared_monitor.map(|monitor| monitor.fingerprint);
+    let live_settings = Arc::clone(&state.settings);
     *current_task = Some(tauri::async_runtime::spawn(async move {
         let result = server
             .run(move |action| {
-                let selected_monitor = selected_monitor.clone();
+                let live_settings = Arc::clone(&live_settings);
                 async move {
                     match action {
                         AgentAction::Ping => AgentResponse {
                             ready: true,
-                            message: "DisplayMux Agent 已就緒".to_owned(),
+                            message: ui_text(
+                                "DisplayMux Agent 已就緒",
+                                "DisplayMux Agent is ready",
+                            )
+                            .to_owned(),
                         },
                         AgentAction::SwitchInput { input } => {
-                            let Some(fingerprint) = selected_monitor else {
+                            let fingerprint = live_settings.read().ok().and_then(|settings| {
+                                settings
+                                    .shared_monitor
+                                    .as_ref()
+                                    .map(|monitor| monitor.fingerprint.clone())
+                            });
+                            let Some(fingerprint) = fingerprint else {
                                 return AgentResponse {
                                     ready: false,
-                                    message: "這台主機尚未選擇共用螢幕".to_owned(),
+                                    message: ui_text(
+                                        "這台主機尚未選擇共用螢幕",
+                                        "No shared display is selected on this host",
+                                    )
+                                    .to_owned(),
                                 };
                             };
                             match tauri::async_runtime::spawn_blocking(move || {
@@ -671,15 +1100,31 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                             {
                                 Ok(Ok(_)) => AgentResponse {
                                     ready: true,
-                                    message: format!("遠端主機已切換至 {}", input.display_name()),
+                                    message: match UiLocale::current() {
+                                        UiLocale::TraditionalChinese => format!(
+                                            "遠端主機已切換至 {}",
+                                            localized_input_name(input)
+                                        ),
+                                        UiLocale::English => format!(
+                                            "The remote host switched to {}",
+                                            localized_input_name(input)
+                                        ),
+                                    },
                                 },
                                 Ok(Err(error)) => AgentResponse {
                                     ready: false,
-                                    message: error.to_string(),
+                                    message: core_user_error(error),
                                 },
                                 Err(error) => AgentResponse {
                                     ready: false,
-                                    message: format!("切換工作無法執行：{error}"),
+                                    message: match UiLocale::current() {
+                                        UiLocale::TraditionalChinese => {
+                                            format!("切換工作無法執行：{error}")
+                                        }
+                                        UiLocale::English => {
+                                            format!("The switching task could not run: {error}")
+                                        }
+                                    },
                                 },
                             }
                         }
@@ -695,11 +1140,14 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
 }
 
 fn store_settings(state: &AppRuntime, settings: AppSettings) -> Result<AppSettings, String> {
-    persist_settings(&state.settings_path, &settings).map_err(user_error)?;
-    let mut current = state
-        .settings
-        .write()
-        .map_err(|_| "無法更新設定，請重新啟動 DisplayMux".to_owned())?;
+    persist_settings(&state.settings_path, &settings).map_err(core_user_error)?;
+    let mut current = state.settings.write().map_err(|_| {
+        ui_text(
+            "無法更新設定，請重新啟動 DisplayMux",
+            "Unable to update settings. Restart DisplayMux.",
+        )
+        .to_owned()
+    })?;
     *current = settings.clone();
     Ok(settings)
 }
@@ -713,7 +1161,13 @@ fn read_settings_inner(state: &AppRuntime) -> Result<AppSettings, String> {
         .settings
         .read()
         .map(|settings| settings.clone())
-        .map_err(|_| "無法讀取設定，請重新啟動 DisplayMux".to_owned())
+        .map_err(|_| {
+            ui_text(
+                "無法讀取設定，請重新啟動 DisplayMux",
+                "Unable to read settings. Restart DisplayMux.",
+            )
+            .to_owned()
+        })
 }
 
 fn load_settings(path: &Path) -> AppSettings {
@@ -816,8 +1270,77 @@ fn run_switch(
     service.switch_to_input(input, SwitchMode::Apply)
 }
 
-fn enumerate_monitors() -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
-    platform_controller()?.enumerate()
+fn enumerate_monitor_inventory() -> Result<MonitorInventory, DisplayMuxError> {
+    let controller = platform_controller()?;
+    monitor_inventory(&controller)
+}
+
+fn monitor_inventory<C: MonitorControl>(
+    controller: &C,
+) -> Result<MonitorInventory, DisplayMuxError> {
+    let detected = controller.enumerate()?;
+    let controllable = detected
+        .iter()
+        .filter(|monitor| match controller.read_input(&monitor.id) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::debug!(
+                    monitor_id = monitor.id.as_str(),
+                    error = %error,
+                    "display does not expose a controllable DDC/CI input"
+                );
+                false
+            }
+        })
+        .cloned()
+        .collect();
+    Ok(MonitorInventory {
+        detected,
+        controllable,
+    })
+}
+
+fn reconcile_monitor_selection(
+    settings: &mut AppSettings,
+    detected: &[MonitorDescriptor],
+    controllable: &[MonitorDescriptor],
+) -> Option<MonitorSelectionChange> {
+    if let Some(selected) = settings.shared_monitor.as_ref() {
+        if let Some(current) = controllable
+            .iter()
+            .find(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
+        {
+            let refreshed = SelectedMonitor::from(current);
+            if *selected != refreshed {
+                settings.shared_monitor = Some(refreshed);
+                return Some(MonitorSelectionChange::RefreshedMetadata);
+            }
+            return None;
+        }
+        if detected
+            .iter()
+            .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
+        {
+            return None;
+        }
+    }
+
+    let mut auto_candidates = controllable.iter().filter(|monitor| !monitor.built_in);
+    let only = auto_candidates.next()?;
+    if auto_candidates.next().is_some() {
+        return None;
+    }
+    let replacement = SelectedMonitor::from(only);
+    let change = match settings.shared_monitor.replace(replacement) {
+        Some(previous) => MonitorSelectionChange::ReplacedMissingMonitor {
+            previous: previous.name,
+            replacement: only.name.clone(),
+        },
+        None => MonitorSelectionChange::SelectedOnlyMonitor {
+            name: only.name.clone(),
+        },
+    };
+    Some(change)
 }
 
 #[cfg(target_os = "windows")]
@@ -875,14 +1398,24 @@ fn user_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+fn core_user_error(error: DisplayMuxError) -> String {
+    error.localized_message(UiLocale::current() == UiLocale::TraditionalChinese)
+}
+
 fn update_error(error: impl std::fmt::Display) -> String {
     tracing::warn!(error = %error, "application update check failed");
-    "無法檢查更新；請確認網路可連線至 GitHub Releases，稍後再試一次".to_owned()
+    ui_text(
+        "無法檢查更新；請確認網路可連線至 GitHub Releases，稍後再試一次",
+        "Unable to check for updates. Confirm that GitHub Releases is reachable and try again later.",
+    ).to_owned()
 }
 
 fn update_install_error(error: impl std::fmt::Display) -> String {
     tracing::error!(error = %error, "signed application update installation failed");
-    "更新下載或簽章驗證失敗；目前版本未變更，請稍後再試一次".to_owned()
+    ui_text(
+        "更新下載或簽章驗證失敗；目前版本未變更，請稍後再試一次",
+        "The update download or signature verification failed. The current version was not changed; try again later.",
+    ).to_owned()
 }
 fn has_valid_shared_key(shared_key: &str) -> bool {
     shared_key.chars().count() >= MIN_SHARED_KEY_LENGTH
@@ -899,18 +1432,132 @@ fn settings_for_current_build(settings: AppSettings) -> AppSettings {
     settings
 }
 
+fn autostart_args() -> Option<Vec<&'static str>> {
+    #[cfg(target_os = "windows")]
+    {
+        Some(vec!["--autostart"])
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+fn launched_from_autostart(args: impl IntoIterator<Item = String>) -> bool {
+    args.into_iter().any(|arg| arg == "--autostart")
+}
+
+#[cfg(target_os = "windows")]
+fn hide_windows_main_window(window: &tauri::Window) {
+    if let Err(error) = window.set_skip_taskbar(true) {
+        tracing::warn!(error = %error, "unable to remove DisplayMux from the taskbar");
+    }
+    if let Err(error) = window.hide() {
+        tracing::warn!(error = %error, "unable to hide DisplayMux in the system tray");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_windows_main_webview(window: &tauri::WebviewWindow) {
+    if let Err(error) = window.set_skip_taskbar(true) {
+        tracing::warn!(error = %error, "unable to remove DisplayMux from the taskbar");
+    }
+    if let Err(error) = window.hide() {
+        tracing::warn!(error = %error, "unable to hide DisplayMux in the system tray");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_windows_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Err(error) = window.set_skip_taskbar(false) {
+        tracing::warn!(error = %error, "unable to restore DisplayMux to the taskbar");
+    }
+    if let Err(error) = window.show() {
+        tracing::warn!(error = %error, "unable to show DisplayMux from the system tray");
+    }
+    if let Err(error) = window.unminimize() {
+        tracing::warn!(error = %error, "unable to unminimize DisplayMux");
+    }
+    if let Err(error) = window.set_focus() {
+        tracing::warn!(error = %error, "unable to focus DisplayMux");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::{
+        menu::MenuBuilder,
+        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    };
+
+    let menu = MenuBuilder::new(app)
+        .text("tray-open", ui_text("開啟 DisplayMux", "Open DisplayMux"))
+        .separator()
+        .text("tray-quit", ui_text("結束 DisplayMux", "Quit DisplayMux"))
+        .build()?;
+    let mut tray = TrayIconBuilder::with_id("displaymux")
+        .menu(&menu)
+        .tooltip("DisplayMux")
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray-open" => show_windows_main_window(app),
+            "tray-quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                show_windows_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 pub fn run() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_target(false)
         .compact()
         .try_init();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            None,
+            autostart_args(),
         ))
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(target_os = "windows")]
+    let builder = builder.on_window_event(|window, event| {
+        if window.label() != "main" {
+            return;
+        }
+        match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                hide_windows_main_window(window);
+            }
+            tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
+                hide_windows_main_window(window);
+            }
+            _ => {}
+        }
+    });
+    builder
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -922,6 +1569,12 @@ pub fn run() -> anyhow::Result<()> {
             if let Err(error) = app.autolaunch().disable() {
                 tracing::warn!(error = %error, "unable to remove development autostart entry");
             }
+            #[cfg(all(target_os = "windows", not(debug_assertions)))]
+            if settings.autostart {
+                if let Err(error) = app.autolaunch().enable() {
+                    tracing::warn!(error = %error, "unable to refresh the login autostart entry");
+                }
+            }
             let discovery = MdnsPeerDiscovery::start(local_host(), DEFAULT_AGENT_PORT)
                 .map(Some)
                 .unwrap_or_else(|error| {
@@ -929,11 +1582,20 @@ pub fn run() -> anyhow::Result<()> {
                     None
                 });
             app.manage(AppRuntime {
-                settings: RwLock::new(settings),
+                settings: Arc::new(RwLock::new(settings)),
                 settings_path,
                 agent_task: Mutex::new(None),
                 discovery,
             });
+            #[cfg(target_os = "windows")]
+            {
+                setup_windows_tray(app)?;
+                if launched_from_autostart(std::env::args()) {
+                    if let Some(window) = app.get_webview_window("main") {
+                        hide_windows_main_webview(&window);
+                    }
+                }
+            }
             let handle: AppHandle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Some(runtime) = handle.try_state::<AppRuntime>() {
@@ -945,6 +1607,7 @@ pub fn run() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            set_locale,
             discover_peers,
             select_peer,
             remove_peer,
@@ -965,7 +1628,51 @@ pub fn run() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
+
+    struct SelectionController {
+        monitors: Vec<MonitorDescriptor>,
+        controllable: HashSet<String>,
+    }
+
+    impl MonitorControl for SelectionController {
+        fn enumerate(&self) -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
+            Ok(self.monitors.clone())
+        }
+
+        fn read_input(
+            &self,
+            monitor: &displaymux_core::MonitorId,
+        ) -> Result<DisplayInput, DisplayMuxError> {
+            if self.controllable.contains(monitor.as_str()) {
+                DisplayInput::new(0x0f)
+            } else {
+                Err(DisplayMuxError::Backend("DDC/CI unavailable".to_owned()))
+            }
+        }
+
+        fn write_input(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+            _input: DisplayInput,
+        ) -> Result<(), DisplayMuxError> {
+            unreachable!("selection tests never write an input")
+        }
+    }
+
+    fn monitor(id: &str) -> MonitorDescriptor {
+        MonitorDescriptor {
+            id: displaymux_core::MonitorId::new(id),
+            name: id.to_owned(),
+            fingerprint: MonitorFingerprint::new("ACM", id, Some(format!("serial-{id}"))),
+            active: true,
+            built_in: false,
+            max_resolution: Some(displaymux_core::MonitorResolution::new(2560, 1440)),
+            resolution_source: Some(ResolutionSource::WindowsDisplayMode),
+        }
+    }
 
     #[test]
     fn shared_key_requires_at_least_eight_characters() {
@@ -990,6 +1697,43 @@ mod tests {
     }
 
     #[test]
+    fn only_the_explicit_login_argument_starts_windows_hidden() {
+        assert!(launched_from_autostart([
+            "DisplayMux.exe".to_owned(),
+            "--autostart".to_owned(),
+        ]));
+        assert!(!launched_from_autostart(["DisplayMux.exe".to_owned()]));
+    }
+
+    #[test]
+    fn automatic_switch_tracks_wake_and_network_fallback_state() {
+        assert!(!NetworkPreparation::NotRequired.peer_woken());
+        assert!(!NetworkPreparation::Ready { wake_sent: true }.warning());
+        assert!(NetworkPreparation::Ready { wake_sent: true }.peer_woken());
+        assert!(NetworkPreparation::Unavailable {
+            wake_sent: false,
+            reason: "offline".to_owned(),
+        }
+        .warning());
+    }
+
+    #[test]
+    fn v011_selected_monitor_without_resolution_source_still_loads() {
+        let value = serde_json::json!({
+            "name": "Existing monitor",
+            "fingerprint": {
+                "manufacturer_id": "ACM",
+                "product_code": "1234",
+                "serial_number": "serial"
+            },
+            "maxResolution": { "width": 3440, "height": 1440 }
+        });
+        let selected: SelectedMonitor = serde_json::from_value(value).unwrap();
+        assert_eq!(selected.resolution_source, None);
+        assert_eq!(selected.max_resolution.unwrap().width, 3440);
+    }
+
+    #[test]
     fn migration_preserves_the_previous_two_host_configuration() {
         let cases = [
             (DestinationHost::Windows, DestinationHost::Mac, 0x0f, 0x11),
@@ -1010,5 +1754,151 @@ mod tests {
             assert_eq!(migrated.peers[0].platform, peer_platform);
             assert_eq!(migrated.peers[0].input.unwrap().value(), peer_input);
         }
+    }
+
+    #[test]
+    fn selects_and_persists_the_only_controllable_monitor() {
+        let external = monitor("external");
+        let mut internal = monitor("internal");
+        internal.built_in = true;
+        let uncontrollable = monitor("uncontrollable");
+        let controller = SelectionController {
+            monitors: vec![internal, uncontrollable, external.clone()],
+            controllable: HashSet::from(["internal".to_owned(), external.id.as_str().to_owned()]),
+        };
+        let inventory = monitor_inventory(&controller).unwrap();
+        assert_eq!(inventory.detected.len(), 3);
+        assert_eq!(inventory.controllable.len(), 2);
+        let mut settings = AppSettings::default();
+
+        let change = reconcile_monitor_selection(
+            &mut settings,
+            &inventory.detected,
+            &inventory.controllable,
+        );
+
+        assert_eq!(
+            change,
+            Some(MonitorSelectionChange::SelectedOnlyMonitor {
+                name: "external".to_owned()
+            })
+        );
+        assert_eq!(
+            settings.shared_monitor,
+            Some(SelectedMonitor::from(&external))
+        );
+    }
+
+    #[test]
+    fn safely_replaces_a_missing_selection_when_only_one_candidate_remains() {
+        let previous = monitor("disconnected");
+        let replacement = monitor("replacement");
+        let mut settings = AppSettings {
+            shared_monitor: Some(SelectedMonitor::from(&previous)),
+            ..AppSettings::default()
+        };
+
+        let change = reconcile_monitor_selection(
+            &mut settings,
+            std::slice::from_ref(&replacement),
+            std::slice::from_ref(&replacement),
+        );
+
+        assert_eq!(
+            change,
+            Some(MonitorSelectionChange::ReplacedMissingMonitor {
+                previous: "disconnected".to_owned(),
+                replacement: "replacement".to_owned(),
+            })
+        );
+        assert_eq!(
+            settings.shared_monitor,
+            Some(SelectedMonitor::from(&replacement))
+        );
+    }
+
+    #[test]
+    fn never_guesses_between_multiple_controllable_monitors() {
+        let mut settings = AppSettings::default();
+        let monitors = [monitor("first"), monitor("second")];
+
+        assert_eq!(
+            reconcile_monitor_selection(&mut settings, &monitors, &monitors),
+            None
+        );
+        assert!(settings.shared_monitor.is_none());
+    }
+
+    #[test]
+    fn missing_selection_is_not_replaced_when_multiple_candidates_remain() {
+        let disconnected = monitor("disconnected");
+        let mut settings = AppSettings {
+            shared_monitor: Some(SelectedMonitor::from(&disconnected)),
+            ..AppSettings::default()
+        };
+        let monitors = [monitor("first"), monitor("second")];
+
+        assert_eq!(
+            reconcile_monitor_selection(&mut settings, &monitors, &monitors),
+            None
+        );
+        assert_eq!(
+            settings.shared_monitor,
+            Some(SelectedMonitor::from(&disconnected))
+        );
+    }
+
+    #[test]
+    fn automatic_offline_fallback_explains_the_black_screen_risk() {
+        let target = monitor("external");
+        let input = DisplayInput::new(0x11).unwrap();
+        let preparation = NetworkPreparation::Unavailable {
+            wake_sent: true,
+            reason: "Agent 沒有回應".to_owned(),
+        };
+        let result = outcome_result(
+            SwitchOutcome::AlreadySelected { target, input },
+            &preparation,
+        );
+
+        assert!(result.warning);
+        assert!(result.peer_woken);
+        assert!(result
+            .detail
+            .contains("local DDC/CI was selected automatically"));
+        assert!(result.detail.contains("temporarily blank"));
+    }
+
+    #[test]
+    fn locale_detection_uses_traditional_chinese_and_falls_back_to_english() {
+        assert_eq!(locale_from_tag("zh-TW"), UiLocale::TraditionalChinese);
+        assert_eq!(locale_from_tag("zh-Hant-HK"), UiLocale::TraditionalChinese);
+        assert_eq!(locale_from_tag("en-US"), UiLocale::English);
+        assert_eq!(locale_from_tag("ja-JP"), UiLocale::English);
+        assert_eq!(locale_from_tag("zh-CN"), UiLocale::English);
+    }
+
+    #[test]
+    fn transient_ddc_failure_does_not_replace_a_still_detected_selection() {
+        let selected = monitor("selected");
+        let replacement = monitor("replacement");
+        let mut settings = AppSettings {
+            shared_monitor: Some(SelectedMonitor::from(&selected)),
+            ..AppSettings::default()
+        };
+        let detected = [selected.clone(), replacement.clone()];
+
+        assert_eq!(
+            reconcile_monitor_selection(
+                &mut settings,
+                &detected,
+                std::slice::from_ref(&replacement),
+            ),
+            None
+        );
+        assert_eq!(
+            settings.shared_monitor,
+            Some(SelectedMonitor::from(&selected))
+        );
     }
 }

@@ -2,8 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
   <dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>DisplayMux 需要使用區域網路來尋找並連接你的另一台電腦。</string>
+    <string>DisplayMux uses the local network to find and connect to your other computer.</string>
     <key>NSBonjourServices</key>
     <array>
       <string>_displaymux._tcp</string>

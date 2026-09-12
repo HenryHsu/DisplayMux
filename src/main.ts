@@ -1,13 +1,17 @@
 import "@fontsource-variable/manrope";
 import {
   Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
-  Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck,
-  Trash2, Zap,
+  ChevronDown, ExternalLink, Github, Languages, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
+  ShieldCheck, Trash2, UserRound, Zap,
 } from "lucide";
+import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import packageMetadata from "../package.json";
+import { locale, localePreference, setLocalePreference, t } from "./i18n";
 import "./styles.css";
 
 type Platform = "windows" | "mac";
+type ResolutionSource = "edid" | "coreGraphicsDisplayMode" | "windowsDisplayMode";
 
 interface MonitorResolution {
   width: number;
@@ -24,14 +28,17 @@ interface MonitorDescriptor {
   id: string;
   name: string;
   active: boolean;
+  builtIn: boolean;
   fingerprint: Fingerprint;
   maxResolution?: MonitorResolution | null;
+  resolutionSource?: ResolutionSource | null;
 }
 
 interface SelectedMonitor {
   name: string;
   fingerprint: Fingerprint;
   maxResolution?: MonitorResolution | null;
+  resolutionSource?: ResolutionSource | null;
 }
 
 interface HostRoute {
@@ -63,6 +70,7 @@ interface DashboardState {
   agentConfigured: boolean;
   ddcAvailable: boolean;
   monitorStatus: string;
+  selectionNotice: string | null;
   monitors: MonitorDescriptor[];
 }
 
@@ -76,8 +84,14 @@ interface DiscoveredPeer {
 }
 
 interface InputOption { value: number; code: string; name: string; }
-interface OperationResult { title: string; detail: string; peerWoken: boolean; }
+interface OperationResult { title: string; detail: string; peerWoken: boolean; warning: boolean; }
 interface UpdateInfo { available: boolean; currentVersion: string; version: string | null; notes: string | null; }
+type SwitchProgressEvent =
+  | { event: "waking"; peerName: string }
+  | { event: "checking"; peerName: string }
+  | { event: "waiting"; peerName: string; seconds: number }
+  | { event: "switching" }
+  | { event: "remoteFallback"; peerName: string };
 type UpdateDownloadEvent =
   | { event: "started"; contentLength: number | null }
   | { event: "progress"; downloaded: number; contentLength: number | null }
@@ -85,10 +99,10 @@ type UpdateDownloadEvent =
 
 const standardInputs: InputOption[] = [
   [0x01, "VGA 1"], [0x02, "VGA 2"], [0x03, "DVI 1"], [0x04, "DVI 2"],
-  [0x05, "Composite Video 1"], [0x06, "Composite Video 2"],
-  [0x07, "S-Video 1"], [0x08, "S-Video 2"], [0x09, "Tuner 1"],
-  [0x0a, "Tuner 2"], [0x0b, "Tuner 3"], [0x0c, "Component Video 1"],
-  [0x0d, "Component Video 2"], [0x0e, "Component Video 3"],
+  [0x05, t("input.composite1")], [0x06, t("input.composite2")],
+  [0x07, "S-Video 1"], [0x08, "S-Video 2"], [0x09, t("input.tuner1")],
+  [0x0a, t("input.tuner2")], [0x0b, t("input.tuner3")], [0x0c, t("input.component1")],
+  [0x0d, t("input.component2")], [0x0e, t("input.component3")],
   [0x0f, "DisplayPort 1"], [0x10, "DisplayPort 2"], [0x11, "HDMI 1"], [0x12, "HDMI 2"],
 ].map(([value, name]) => ({ value: value as number, code: codeFor(value as number), name: name as string }));
 
@@ -98,7 +112,7 @@ const previewSettings: AppSettings = {
 };
 const previewDashboard: DashboardState = {
   platform: "windows", localHost: "windows", agentConfigured: false, ddcAvailable: false,
-  monitorStatus: "請在設定頁選擇共用螢幕", monitors: [],
+  monitorStatus: t("preview.monitorStatus"), selectionNotice: null, monitors: [],
 };
 
 let settings = previewSettings;
@@ -109,55 +123,68 @@ let isPreview = false;
 let pendingUpdate: UpdateInfo | null = null;
 
 const app = document.querySelector<HTMLDivElement>("#app");
-if (!app) throw new Error("找不到 DisplayMux 應用程式根節點");
+if (!app) throw new Error(t("app.rootMissing"));
+document.documentElement.lang = locale;
 
 app.innerHTML = `
   <div class="app-shell">
-    <aside class="sidebar" aria-label="主要導覽">
-      <div class="brand-header">
-        <div class="brand-icon"><i data-lucide="monitor"></i></div>
-        <span class="brand-title">DisplayMux</span>
+    <aside class="sidebar" aria-label="${t("nav.aria")}">
+      <div class="brand-block">
+        <div class="brand-header">
+          <div class="brand-icon"><i data-lucide="monitor"></i></div>
+          <span class="brand-title">DisplayMux</span>
+        </div>
+        <label class="language-picker">
+          <i data-lucide="languages"></i>
+          <span class="sr-only">${t("language.label")}</span>
+          <select id="language-select" aria-label="${t("language.label")}">
+            <option value="system">${t("language.system")}</option>
+            <option value="en">${t("language.english")}</option>
+            <option value="zh-TW">${t("language.traditionalChinese")}</option>
+          </select>
+          <i class="language-chevron" data-lucide="chevron-down"></i>
+        </label>
       </div>
       <nav class="sidebar-nav">
-        <button class="nav-button is-active" data-page="dashboard"><i data-lucide="arrow-left-right"></i><span>切換中心</span></button>
-        <button class="nav-button" data-page="settings"><i data-lucide="settings"></i><span>螢幕與主機</span></button>
+        <button class="nav-button is-active" data-page="dashboard"><i data-lucide="arrow-left-right"></i><span>${t("nav.dashboard")}</span></button>
+        <button class="nav-button" data-page="settings"><i data-lucide="settings"></i><span>${t("nav.settings")}</span></button>
       </nav>
-      <button class="nav-button nav-bottom" data-page="help"><i data-lucide="circle-help"></i><span>使用說明</span></button>
+      <button class="nav-button nav-bottom" data-page="help"><i data-lucide="circle-help"></i><span>${t("nav.help")}</span></button>
     </aside>
     <main class="workspace">
       <header class="topbar">
-        <h1 id="page-title">共用螢幕切換中心</h1>
+        <h1 id="page-title">${t("page.dashboard")}</h1>
         <div class="topbar-actions">
-          <div class="agent-pill" id="agent-pill"><span class="status-dot"></span><span>讀取中</span></div>
-          <button class="icon-button" id="update-button" title="檢查更新"><i data-lucide="download"></i></button>
-          <button class="icon-button" id="refresh-button" title="重新整理"><i data-lucide="refresh-cw"></i></button>
+          <div class="agent-pill" id="agent-pill"><span class="status-dot"></span><span>${t("dashboard.agentMissing")}</span></div>
+          <button class="icon-button" id="update-button" title="${t("action.checkUpdates")}"><i data-lucide="download"></i></button>
+          <button class="icon-button" id="refresh-button" title="${t("action.refresh")}"><i data-lucide="refresh-cw"></i></button>
         </div>
       </header>
 
       <section class="page is-active" id="dashboard-page">
         <div class="showcase-monitor-card">
           <div class="showcase-header">
-            <span class="showcase-title">共用螢幕</span>
+            <span class="showcase-title">${t("dashboard.sharedDisplay")}</span>
             <div class="showcase-badges">
               <span class="status-badge subtle" id="screen-ratio">16:9</span>
-              <span class="status-badge" id="screen-input">DDC/CI 已就緒</span>
+              <span class="status-badge" id="screen-input">${t("dashboard.ddcReady")}</span>
             </div>
           </div>
           <div class="flat-monitor-wrap" id="flat-monitor-wrap"></div>
           <div class="showcase-info">
-            <strong class="showcase-monitor-name" id="shared-monitor-name">尚未選擇</strong>
-            <p class="showcase-monitor-desc" id="monitor-status">以 EDID 製造商、產品碼與序號鎖定，不依顯示器排列順序。</p>
+            <strong class="showcase-monitor-name" id="shared-monitor-name">${t("dashboard.notSelected")}</strong>
+            <p class="showcase-monitor-desc" id="monitor-status">${t("dashboard.identityHint")}</p>
           </div>
         </div>
 
         <div class="host-route-grid" id="host-route-grid"></div>
 
         <section class="status-summary-bar">
-          <div class="summary-item"><span>共用螢幕：</span><strong id="monitor-health" class="text-accent">正在偵測</strong></div>
+          <div class="summary-item"><span>${t("dashboard.sharedLabel")}</span><strong id="monitor-health" class="text-accent">${t("dashboard.detecting")}</strong></div>
           <span class="summary-pipe"></span>
-          <div class="summary-item"><span>已加入主機：</span><strong id="peer-health">0 台</strong></div>
+          <div class="summary-item"><span>${t("dashboard.hostsLabel")}</span><strong id="peer-health">${t("dashboard.hostCount", { count: 0 })}</strong></div>
           <span class="summary-pipe"></span>
-          <div class="summary-item"><span>喚醒支援：</span><strong id="wake-health" class="text-accent">尚未加入主機</strong></div>
+          <div class="summary-item"><span>${t("dashboard.wakeLabel")}</span><strong id="wake-health" class="text-accent">${t("dashboard.noHosts")}</strong></div>
         </section>
       </section>
 
@@ -167,43 +194,43 @@ app.innerHTML = `
             <form id="settings-form">
               <div class="form-section first">
                 <div class="pairing-heading">
-                  <strong>1. 選擇唯一的共用螢幕</strong>
+                  <strong>${t("settings.stepMonitor")}</strong>
                 </div>
                 <div class="monitor-picker" id="monitor-picker"></div>
               </div>
 
               <div class="form-section two-columns">
-                <label class="field"><span>這台電腦</span><input id="local-host-name" disabled /></label>
-                <label class="field"><span>這台電腦連接的輸入值</span><input id="local-input" list="input-values" placeholder="例如 0x0F" /><small id="local-input-name">尚未設定</small></label>
+                <label class="field"><span>${t("settings.localComputer")}</span><input id="local-host-name" disabled /></label>
+                <label class="field"><span>${t("settings.localInput")}</span><input id="local-input" list="input-values" placeholder="${t("settings.inputPlaceholder")}" /><small id="local-input-name">${t("input.unset")}</small></label>
               </div>
 
               <div class="form-section pairing-section">
                 <div class="pairing-heading">
-                  <strong>2. 加入同網路的其他主機</strong>
-                  <button class="scan-button" id="scan-button" type="button"><i data-lucide="search"></i>重新搜尋</button>
+                  <strong>${t("settings.stepHosts")}</strong>
+                  <button class="scan-button" id="scan-button" type="button"><i data-lucide="search"></i>${t("action.searchAgain")}</button>
                 </div>
                 <div class="peer-list" id="peer-list"></div>
                 <div class="paired-routes" id="paired-routes"></div>
               </div>
 
               <div class="form-section two-columns">
-                <label class="field"><span>配對密碼</span><div class="input-wrap"><i data-lucide="key-round"></i><input id="shared-key" type="password" minlength="8" placeholder="至少 8 個字元" /></div><small>所有主機請填入完全相同的內容。</small></label>
-                <label class="field compact"><span>喚醒等待秒數 (45 秒)</span><input id="wait-seconds" type="number" min="5" max="120" /><small>逾時後不切換，避免黑畫面。</small></label>
+                <label class="field"><span>${t("settings.password")}</span><div class="input-wrap"><i data-lucide="key-round"></i><input id="shared-key" type="password" minlength="8" placeholder="${t("settings.passwordPlaceholder")}" /></div><small>${t("settings.passwordHint")}</small></label>
+                <label class="field compact"><span>${t("settings.wait")}</span><input id="wait-seconds" type="number" min="5" max="120" /><small>${t("settings.waitHint")}</small></label>
               </div>
 
               <div class="toggles-section">
                 <label class="switch-row">
                   <span class="switch-label">
-                    <strong>登入後自動啟動</strong>
-                    <small>讓其他主機能搜尋、喚醒並要求這台電腦代為切換。</small>
+                    <strong>${t("settings.autostart")}</strong>
+                    <small>${t("settings.autostartHint")}</small>
                   </span>
                   <input id="autostart" type="checkbox" class="toggle-checkbox" />
                   <span class="switch-slider"></span>
                 </label>
                 <label class="switch-row">
                   <span class="switch-label">
-                    <strong>啟動後自動檢查更新</strong>
-                    <small>只向 GitHub Releases 取得版本資訊；下載與安裝前仍會要求確認。</small>
+                    <strong>${t("settings.autoUpdates")}</strong>
+                    <small>${t("settings.autoUpdatesHint")}</small>
                   </span>
                   <input id="check-updates" type="checkbox" class="toggle-checkbox" />
                   <span class="switch-slider"></span>
@@ -211,61 +238,86 @@ app.innerHTML = `
               </div>
 
               <div class="form-actions">
-                <button class="save-button full-width" type="submit"><i data-lucide="save"></i>儲存設定</button>
+                <button class="save-button full-width" type="submit"><i data-lucide="save"></i>${t("action.save")}</button>
               </div>
             </form>
           </section>
 
           <aside class="compatibility-panel">
-            <h3>輸入值判讀</h3>
-            <div class="path-item"><span class="path-badge">01</span><div><strong>MCCS 標準通訊規範</strong><p>標準值自動命名（如 0x0F 為 DisplayPort 1，0x11 為 HDMI 1）。</p></div></div>
-            <div class="path-item"><span class="path-badge">02</span><div><strong>DDC/CI 協議</strong><p>USB-C 等輸入可能使用廠商自訂值，DisplayMux 會保留原碼顯示自訂輸入。</p></div></div>
-            <div class="path-item"><span class="path-badge">03</span><div><strong>多主機路由切換確認</strong><p>同一台共用螢幕可為每台已加入主機保存不同輸入值，確保切換安全。</p></div></div>
-            <div class="compat-note"><i data-lucide="shield-check"></i><p>即使更換螢幕，也只會控制選取的 EDID 指紋，保護其他獨立工作螢幕安全。</p></div>
+            <h3>${t("settings.inputGuide")}</h3>
+            <div class="path-item"><span class="path-badge">01</span><div><strong>${t("settings.mccsTitle")}</strong><p>${t("settings.mccsBody")}</p></div></div>
+            <div class="path-item"><span class="path-badge">02</span><div><strong>${t("settings.ddcTitle")}</strong><p>${t("settings.ddcBody")}</p></div></div>
+            <div class="path-item"><span class="path-badge">03</span><div><strong>${t("settings.routingTitle")}</strong><p>${t("settings.routingBody")}</p></div></div>
+            <div class="compat-note"><i data-lucide="shield-check"></i><p>${t("settings.safetyBody")}</p></div>
           </aside>
         </div>
       </section>
 
       <section class="page" id="help-page">
         <div class="help-content">
-          <p class="section-kicker">OPERATING NOTES</p><h2>安全與相容性說明</h2>
+          <p class="section-kicker">OPERATING NOTES</p><h2>${t("help.heading")}</h2>
           <div class="note-list">
-            <article><span>01</span><div><h3>更換螢幕</h3><p>更換後請重新選擇共用螢幕。舊指紋找不到時，DisplayMux 會停止而不會改動其他螢幕。</p></div></article>
-            <article><span>02</span><div><h3>輸入值</h3><p>DisplayMux 使用 DDC/CI VCP 0x60。常見值可自動命名，但廠商自訂值應依螢幕選單或說明書確認。</p></div></article>
-            <article><span>03</span><div><h3>系統睡眠</h3><p>切換至遠端主機前會先測試連線，必要時送出 Wake-on-LAN，等待 Agent 回應後才切換。</p></div></article>
-            <article><span>04</span><div><h3>MacBook 轉接器</h3><p>若 USB-C 或 HDMI 轉接器未轉送 DDC，可由另一台已配對、可控制螢幕的主機代為切換。</p></div></article>
+            <article><span>01</span><div><h3>${t("help.replaceTitle")}</h3><p>${t("help.replaceBody")}</p></div></article>
+            <article><span>02</span><div><h3>${t("help.inputTitle")}</h3><p>${t("help.inputBody")}</p></div></article>
+            <article><span>03</span><div><h3>${t("help.autoTitle")}</h3><p>${t("help.autoBody")}</p></div></article>
+            <article><span>04</span><div><h3>${t("help.adapterTitle")}</h3><p>${t("help.adapterBody")}</p></div></article>
           </div>
+
+          <section class="about-section" aria-labelledby="about-title">
+            <p class="section-kicker">ABOUT</p><h2 id="about-title">${t("about.title")}</h2>
+            <dl class="about-grid">
+              <div class="about-item">
+                <dt><i data-lucide="user-round"></i>${t("about.developer")}</dt>
+                <dd>Henry Hsu</dd>
+              </div>
+              <div class="about-item">
+                <dt><i data-lucide="github"></i>GitHub</dt>
+                <dd><a href="https://github.com/HenryHsu/DisplayMux" target="_blank" rel="noopener noreferrer">HenryHsu/DisplayMux<i data-lucide="external-link"></i></a></dd>
+              </div>
+              <div class="about-item">
+                <dt><i data-lucide="activity"></i>${t("about.version")}</dt>
+                <dd id="app-version" aria-live="polite">${t("about.loading")}</dd>
+              </div>
+            </dl>
+          </section>
         </div>
       </section>
     </main>
   </div>
   <datalist id="input-values"></datalist>
-  <div class="operation-overlay" id="operation-overlay" aria-live="polite" aria-hidden="true"><div class="operation-dialog"><div class="spinner"></div><p class="section-kicker">SAFE SWITCH</p><h2 id="operation-title">正在執行</h2><p>必要時會先確認或喚醒目標主機，再切換唯一指定的共用螢幕。</p></div></div>
+  <div class="operation-overlay" id="operation-overlay" aria-live="polite" aria-hidden="true"><div class="operation-dialog"><div class="spinner"></div><p class="section-kicker">SMART SWITCH</p><h2 id="operation-title">${t("operation.running")}</h2><p id="operation-detail">${t("operation.preparingBody")}</p></div></div>
   <div class="update-overlay" id="update-overlay" aria-hidden="true">
     <div class="update-dialog">
       <p class="section-kicker">SIGNED UPDATE</p>
-      <h2 id="update-title">有可用更新</h2>
+      <h2 id="update-title">${t("update.available")}</h2>
       <p id="update-version"></p>
       <div class="update-notes" id="update-notes"></div>
       <div class="update-progress" id="update-progress" hidden><div id="update-progress-bar"></div></div>
       <p class="update-progress-label" id="update-progress-label"></p>
-      <div class="update-actions"><button class="scan-button" id="update-cancel" type="button">稍後</button><button class="save-button" id="update-install" type="button"><i data-lucide="download"></i>下載並安裝</button></div>
+      <div class="update-actions"><button class="scan-button" id="update-cancel" type="button">${t("action.later")}</button><button class="save-button" id="update-install" type="button"><i data-lucide="download"></i>${t("action.downloadInstall")}</button></div>
     </div>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, CircleHelp, Computer, Download, KeyRound, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, Zap };
+const iconSet = { Activity, ArrowLeftRight, ChevronDown, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Languages, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
-const pageTitles: Record<string, string> = { dashboard: "共用螢幕切換中心", settings: "螢幕與主機設定", help: "相容性與安全說明" };
+const pageTitles: Record<string, string> = { dashboard: t("page.dashboard"), settings: t("page.settings"), help: t("page.help") };
 document.querySelectorAll<HTMLButtonElement>("[data-page]").forEach((button) => button.addEventListener("click", () => showPage(button.dataset.page ?? "dashboard")));
 document.querySelector<HTMLButtonElement>("#refresh-button")?.addEventListener("click", () => void refresh());
 document.querySelector<HTMLButtonElement>("#update-button")?.addEventListener("click", () => pendingUpdate ? showUpdateDialog(pendingUpdate) : void checkForUpdates(true));
 document.querySelector<HTMLButtonElement>("#update-cancel")?.addEventListener("click", hideUpdateDialog);
 document.querySelector<HTMLButtonElement>("#update-install")?.addEventListener("click", () => void installUpdate());
 document.querySelector<HTMLButtonElement>("#scan-button")?.addEventListener("click", () => void scanPeers());
+const languageSelect = document.querySelector<HTMLSelectElement>("#language-select");
+if (languageSelect) {
+  languageSelect.value = localePreference;
+  languageSelect.addEventListener("change", () => {
+    if (setLocalePreference(languageSelect.value)) window.location.reload();
+  });
+}
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
 document.querySelector<HTMLInputElement>("#local-input")?.addEventListener("input", renderInputHints);
 document.querySelector("#monitor-picker")?.addEventListener("click", (event) => {
@@ -277,15 +329,15 @@ document.querySelector("#peer-list")?.addEventListener("click", (event) => {
   if (button?.dataset.addPeer) void addPeer(button.dataset.addPeer);
 });
 document.querySelector("#paired-routes")?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-remove-peer]");
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-remove-peer], [data-probe-id], [data-wake-id]");
   if (button?.dataset.removePeer) void removePeer(button.dataset.removePeer);
+  if (button?.dataset.probeId) void peerCommand("probe_peer", button.dataset.probeId);
+  if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
 document.querySelector("#paired-routes")?.addEventListener("input", renderInputHints);
 document.querySelector("#host-route-grid")?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id], [data-probe-id], [data-wake-id]");
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id]");
   if (button?.dataset.switchId) void switchHost(button.dataset.switchId);
-  if (button?.dataset.probeId) void peerCommand("probe_peer", button.dataset.probeId);
-  if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
 
 function showPage(page: string): void {
@@ -298,8 +350,9 @@ function showPage(page: string): void {
 async function refresh(): Promise<void> {
   document.querySelector("#refresh-button svg")?.classList.add("is-spinning");
   try {
-    [dashboard, settings, inputOptions] = await Promise.all([
-      invoke<DashboardState>("get_dashboard_state"), invoke<AppSettings>("get_settings"), invoke<InputOption[]>("get_input_options"),
+    dashboard = await invoke<DashboardState>("get_dashboard_state");
+    [settings, inputOptions] = await Promise.all([
+      invoke<AppSettings>("get_settings"), invoke<InputOption[]>("get_input_options"),
     ]);
     try { discoveredPeers = await invoke<DiscoveredPeer[]>("discover_peers"); } catch { discoveredPeers = []; }
     isPreview = false;
@@ -307,6 +360,9 @@ async function refresh(): Promise<void> {
     dashboard = previewDashboard; settings = previewSettings; inputOptions = standardInputs; discoveredPeers = []; isPreview = true;
   } finally { document.querySelector("#refresh-button svg")?.classList.remove("is-spinning"); }
   renderState();
+  if (!isPreview && dashboard.selectionNotice) {
+    showToast(t("toast.selectionUpdated"), dashboard.selectionNotice);
+  }
 }
 
 function getFlatMonitorSvg(isUltrawide: boolean): string {
@@ -376,31 +432,31 @@ function getFlatMonitorSvg(isUltrawide: boolean): string {
 
 function renderState(): void {
   let currentResolution: MonitorResolution | null = null;
+  let currentResolutionSource: ResolutionSource | null = null;
   if (settings.sharedMonitor) {
     setText("#shared-monitor-name", settings.sharedMonitor.name);
-    setText("#monitor-status", "");
+    setText("#monitor-status", dashboard.monitorStatus);
     currentResolution = settings.sharedMonitor.maxResolution ?? null;
+    currentResolutionSource = settings.sharedMonitor.resolutionSource ?? null;
     if (!currentResolution) {
       const match = dashboard.monitors.find((m) =>
         sameFingerprint(m.fingerprint, settings.sharedMonitor!.fingerprint)
       );
       if (match?.maxResolution) {
         currentResolution = match.maxResolution;
+        currentResolutionSource = match.resolutionSource ?? null;
       }
     }
   } else {
-    setText("#shared-monitor-name", "尚未選擇");
-    setText("#monitor-status", dashboard.monitorStatus || "請在「螢幕與主機」設定頁選擇共用螢幕");
+    setText("#shared-monitor-name", t("dashboard.notSelected"));
+    setText("#monitor-status", dashboard.monitorStatus || t("preview.monitorStatus"));
     if (dashboard.monitors.length > 0 && dashboard.monitors[0].maxResolution) {
       currentResolution = dashboard.monitors[0].maxResolution;
+      currentResolutionSource = dashboard.monitors[0].resolutionSource ?? null;
     }
   }
 
-  const isUltrawide = Boolean(
-    currentResolution &&
-    currentResolution.height > 0 &&
-    (currentResolution.width / currentResolution.height) >= 2.0
-  );
+  const isUltrawide = Boolean(currentResolution && isUltrawideResolution(currentResolution));
 
   const monitorWrap = document.querySelector("#flat-monitor-wrap");
   if (monitorWrap) {
@@ -411,21 +467,21 @@ function renderState(): void {
   if (ratioBadge) {
     if (currentResolution) {
       ratioBadge.textContent = isUltrawide
-        ? `21:9 · ${currentResolution.width}×${currentResolution.height}`
-        : `16:9 · ${currentResolution.width}×${currentResolution.height}`;
+        ? `21:9 · ${currentResolution.width}×${currentResolution.height} · ${resolutionSourceName(currentResolutionSource)}`
+        : `16:9 · ${currentResolution.width}×${currentResolution.height} · ${resolutionSourceName(currentResolutionSource)}`;
     } else {
       ratioBadge.textContent = isUltrawide ? "21:9" : "16:9";
     }
   }
 
-  setText("#screen-input", dashboard.ddcAvailable ? "DDC/CI 已就緒" : "尚未就緒");
-  setText("#monitor-health", dashboard.ddcAvailable ? "已鎖定" : "尚未就緒");
-  setText("#peer-health", `${settings.peers.length} 台`);
-  setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? "正常" : (settings.peers.length ? "無 MAC 資料" : "尚未加入主機"));
+  setText("#screen-input", dashboard.ddcAvailable ? t("dashboard.ddcReady") : t("dashboard.notReady"));
+  setText("#monitor-health", dashboard.ddcAvailable ? t("dashboard.locked") : t("dashboard.notReady"));
+  setText("#peer-health", t("dashboard.hostCount", { count: settings.peers.length }));
+  setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? t("dashboard.wakeNormal") : (settings.peers.length ? t("dashboard.noMac") : t("dashboard.noHosts")));
   const pill = document.querySelector("#agent-pill");
   pill?.classList.toggle("is-ready", dashboard.agentConfigured);
-  if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? "介面預覽" : dashboard.agentConfigured ? "Agent 運作中" : "Agent 未設定";
-  setInput("#local-host-name", dashboard.localHost === "windows" ? "這台 Windows PC" : "這台 Mac");
+  if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? t("dashboard.preview") : dashboard.agentConfigured ? t("dashboard.agentReady") : t("dashboard.agentMissing");
+  setInput("#local-host-name", dashboard.localHost === "windows" ? t("dashboard.localWindowsPc") : t("dashboard.localMac"));
   setInput("#local-input", settings.localInput == null ? "" : codeFor(settings.localInput));
   setInput("#shared-key", settings.sharedKey);
   setInput("#wait-seconds", String(settings.waitSeconds));
@@ -434,7 +490,7 @@ function renderState(): void {
   const checkUpdates = document.querySelector<HTMLInputElement>("#check-updates");
   if (checkUpdates) checkUpdates.checked = settings.checkUpdates;
   const datalist = document.querySelector("#input-values");
-  if (datalist) datalist.innerHTML = inputOptions.map((item) => `<option value="${item.code}">${escapeHtml(item.name)}</option>`).join("");
+  if (datalist) datalist.innerHTML = inputOptions.map((item) => `<option value="${item.code}">${escapeHtml(localizedInputOptionName(item))}</option>`).join("");
   renderMonitors(); renderPeerList(); renderPairedRoutes(); renderHostRoutes(); renderInputHints(); refreshIcons();
 }
 
@@ -442,7 +498,7 @@ function renderMonitors(): void {
   const container = document.querySelector("#monitor-picker");
   if (!container) return;
   if (!dashboard.monitors.length) {
-    container.innerHTML = `<p class="peer-empty">沒有找到可選擇的 DDC/CI 螢幕</p>`; return;
+    container.innerHTML = `<p class="peer-empty">${t("settings.noMonitors")}</p>`; return;
   }
   container.innerHTML = dashboard.monitors.map((monitor) => {
     const selected = settings.sharedMonitor?.fingerprint;
@@ -450,18 +506,18 @@ function renderMonitors(): void {
     const fp = monitor.fingerprint;
     const res = monitor.maxResolution;
     const resText = res
-      ? `(${res.width}×${res.height} ${res.width / res.height >= 2.0 ? "21:9" : "16:9"})`
+      ? `(${res.width}×${res.height} ${isUltrawideResolution(res) ? "21:9" : "16:9"} · ${resolutionSourceName(monitor.resolutionSource ?? null)})`
       : "";
     return `<article class="monitor-card-item ${isSelected ? "is-selected" : ""}">
       <div class="monitor-item-left">
         <div class="monitor-item-icon"><i data-lucide="monitor"></i></div>
         <div class="monitor-identity">
           <strong>${escapeHtml(monitor.name)}</strong>
-          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? "無序號")} ${resText} ${dashboard.ddcAvailable ? "(DDC/CI 已就緒)" : ""}</span>
+          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? t("settings.noSerial"))} ${resText} (${t("settings.ddcControllable")})</span>
         </div>
       </div>
       <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" ${isSelected ? "disabled" : ""}>
-        ${isSelected ? "已選取" : "設為共用"}
+        ${isSelected ? t("action.selected") : t("action.selectShared")}
       </button>
     </article>`;
   }).join("");
@@ -474,44 +530,49 @@ function renderPeerList(): void {
   list.innerHTML = available.length ? available.map((peer) => `<article class="peer-row">
     <div class="peer-identity">
       <strong>${escapeHtml(peer.name)}</strong>
-      <span>${platformName(peer.platform)} · 自動取得網路資訊</span>
+      <span>${platformName(peer.platform)} · ${t("settings.networkAuto")}</span>
     </div>
-    <button type="button" class="peer-add-btn" data-add-peer="${escapeHtml(peer.id)}"><i data-lucide="plus"></i>加入</button>
-  </article>`).join("") : `<p class="peer-empty">沒有尚未加入的 DisplayMux 主機</p>`;
+    <button type="button" class="peer-add-btn" data-add-peer="${escapeHtml(peer.id)}"><i data-lucide="plus"></i>${t("action.add")}</button>
+  </article>`).join("") : `<p class="peer-empty">${t("settings.noAvailableHosts")}</p>`;
 }
 
 function renderPairedRoutes(): void {
   const container = document.querySelector("#paired-routes");
   if (!container) return;
-  container.innerHTML = settings.peers.length ? `<p class="field-title">已加入的主機與輸入</p>` + settings.peers.map((peer) => `<article class="paired-route-card">
+  container.innerHTML = settings.peers.length ? `<p class="field-title">${t("settings.addedHosts")}</p>` + settings.peers.map((peer) => `<article class="paired-route-card">
     <div class="peer-identity">
       <strong>${escapeHtml(peer.name)}</strong>
       <span>${platformName(peer.platform)} · ${escapeHtml(peer.address)}</span>
+      <div class="peer-diagnostic-actions" aria-label="${escapeHtml(t("settings.diagnosticAria", { name: peer.name }))}">
+        <button class="text-button" type="button" data-probe-id="${escapeHtml(peer.id)}">${t("action.testConnection")}</button>
+        <span class="tool-sep">·</span>
+        <button class="text-button" type="button" data-wake-id="${escapeHtml(peer.id)}" ${peer.macAddress.trim() ? "" : "disabled"}>${t("action.sendWake")}</button>
+      </div>
     </div>
     <div class="paired-route-right">
       <label class="paired-input-wrap">
-        <span>輸入值:</span>
-        <input class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" list="input-values" value="${peer.input == null ? "" : codeFor(peer.input)}" placeholder="例如 0x11"/>
+        <span>${t("settings.inputValue")}</span>
+        <input class="paired-input-field" data-route-input="${escapeHtml(peer.id)}" list="input-values" value="${peer.input == null ? "" : codeFor(peer.input)}" placeholder="${t("settings.inputPlaceholder")}"/>
       </label>
-      <button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="移除"><i data-lucide="trash-2"></i></button>
+      <button class="delete-button" type="button" data-remove-peer="${escapeHtml(peer.id)}" title="${t("action.remove")}"><i data-lucide="trash-2"></i></button>
     </div>
-  </article>`).join("") : `<p class="peer-empty">尚未加入其他主機</p>`;
+  </article>`).join("") : `<p class="peer-empty">${t("settings.noAddedHosts")}</p>`;
 }
 
 function renderHostRoutes(): void {
   const container = document.querySelector("#host-route-grid");
   if (!container) return;
   const routes = [
-    { id: "local", name: dashboard.localHost === "windows" ? "這台 Windows 電腦" : "這台 Mac", platform: dashboard.localHost, input: settings.localInput, local: true },
+    { id: "local", name: dashboard.localHost === "windows" ? t("dashboard.localWindows") : t("dashboard.localMac"), platform: dashboard.localHost, input: settings.localInput, local: true },
     ...settings.peers.map((peer) => ({ ...peer, local: false })),
   ];
   container.innerHTML = routes.map((route) => {
     const badgeText = route.local
-      ? (route.platform === "mac" ? "本機 macOS" : "本機 Windows")
-      : (route.platform === "mac" ? "已連線 macOS" : "已連線 Windows");
+      ? (route.platform === "mac" ? t("dashboard.localMacOs") : t("dashboard.localWindowsBadge"))
+      : (route.platform === "mac" ? t("dashboard.connectedMacOs") : t("dashboard.connectedWindows"));
     const inputDesc = route.input == null
-      ? "尚未設定輸入"
-      : (route.local ? `目前輸入：${escapeHtml(inputName(route.input))}` : `指定輸入：${escapeHtml(inputName(route.input))}`);
+      ? t("dashboard.inputUnset")
+      : (route.local ? t("dashboard.currentInput", { input: escapeHtml(inputName(route.input)) }) : t("dashboard.assignedInput", { input: escapeHtml(inputName(route.input)) }));
     const iconName = route.platform === "mac" ? "laptop" : "computer";
 
     return `
@@ -528,19 +589,14 @@ function renderHostRoutes(): void {
         </div>
         ${route.local ? `
           <div class="local-active-state">
-            <span>目前顯示中</span>
+            <span>${t("dashboard.currentlyDisplayed")}</span>
             <span class="active-toggle-indicator"></span>
           </div>
         ` : `
-          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || !settings.sharedMonitor ? "disabled" : ""}>
+          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || (!dashboard.ddcAvailable && !dashboard.agentConfigured) ? "disabled" : ""}>
             <i data-lucide="arrow-left-right"></i>
-            <span>切換至此主機</span>
+            <span>${t("action.switchHost")}</span>
           </button>
-          <div class="route-tools">
-            <button class="text-button" type="button" data-probe-id="${escapeHtml(route.id)}">測試連線</button>
-            <span class="tool-sep">·</span>
-            <button class="text-button" type="button" data-wake-id="${escapeHtml(route.id)}">送出喚醒</button>
-          </div>
         `}
       </article>
     `;
@@ -555,30 +611,30 @@ function renderInputHints(): void {
 
 async function scanPeers(): Promise<void> {
   const button = document.querySelector<HTMLButtonElement>("#scan-button");
-  if (button) { button.disabled = true; button.textContent = "搜尋中"; }
+  if (button) { button.disabled = true; button.textContent = t("action.searching"); }
   try {
     discoveredPeers = isPreview ? [] : await invoke<DiscoveredPeer[]>("discover_peers");
     renderPeerList(); refreshIcons();
-    if (!discoveredPeers.length) showToast("尚未找到其他主機", "請在其他電腦開啟 DisplayMux，並確認位於相同私人網路。", true);
-  } catch (error) { showToast("無法搜尋區域網路", String(error), true); }
-  finally { if (button) { button.disabled = false; button.textContent = "重新搜尋"; } }
+    if (!discoveredPeers.length) showToast(t("toast.noPeersTitle"), t("toast.noPeersBody"), true);
+  } catch (error) { showToast(t("toast.scanFailed"), String(error), true); }
+  finally { if (button) { button.disabled = false; button.textContent = t("action.searchAgain"); } }
 }
 
 async function selectMonitor(monitorId: string): Promise<void> {
   try {
     settings = await invoke<AppSettings>("select_monitor", { monitorId });
-    await refresh(); showToast("共用螢幕已選取", `${settings.sharedMonitor?.name ?? "指定螢幕"} 是唯一控制目標。`);
-  } catch (error) { showToast("無法選擇螢幕", String(error), true); }
+    await refresh(); showToast(t("toast.monitorSelected"), t("toast.monitorSelectedBody", { name: settings.sharedMonitor?.name ?? t("dashboard.sharedDisplay") }));
+  } catch (error) { showToast(t("toast.monitorSelectFailed"), String(error), true); }
 }
 
 async function addPeer(peerId: string): Promise<void> {
-  try { settings = await invoke<AppSettings>("select_peer", { peerId }); renderState(); showToast("主機已加入", "請為這台主機指定螢幕輸入值並儲存。"); }
-  catch (error) { showToast("無法加入主機", String(error), true); }
+  try { settings = await invoke<AppSettings>("select_peer", { peerId }); renderState(); showToast(t("toast.peerAdded"), t("toast.peerAddedBody")); }
+  catch (error) { showToast(t("toast.peerAddFailed"), String(error), true); }
 }
 
 async function removePeer(peerId: string): Promise<void> {
   try { settings = await invoke<AppSettings>("remove_peer", { peerId }); renderState(); }
-  catch (error) { showToast("無法移除主機", String(error), true); }
+  catch (error) { showToast(t("toast.peerRemoveFailed"), String(error), true); }
 }
 
 async function saveSettings(event: SubmitEvent): Promise<void> {
@@ -595,24 +651,43 @@ async function saveSettings(event: SubmitEvent): Promise<void> {
     };
     const result = await invoke<OperationResult>("save_settings", { settings });
     showToast(result.title, result.detail); await refresh();
-  } catch (error) { showToast("設定未儲存", String(error), true); }
+  } catch (error) { showToast(t("toast.settingsFailed"), String(error), true); }
 }
 
 async function switchHost(targetId: string): Promise<void> {
-  showOperation("正在確認主機與共用螢幕");
-  try { const result = await invoke<OperationResult>("switch_host", { targetId, force: false }); showToast(result.title, result.detail); }
-  catch (error) { showToast("切換失敗", String(error), true); }
-  finally { hideOperation(); }
+  showOperation(t("operation.preparingTitle"), t("operation.preparingBody"));
+  const onEvent = new Channel<SwitchProgressEvent>();
+  onEvent.onmessage = (event) => {
+    if (event.event === "waking") {
+      showOperation(t("operation.wakingTitle", { name: event.peerName }), t("operation.wakingBody"));
+    } else if (event.event === "checking") {
+      showOperation(t("operation.checkingTitle", { name: event.peerName }), t("operation.checkingBody"));
+    } else if (event.event === "waiting") {
+      showOperation(t("operation.waitingTitle", { name: event.peerName }), t("operation.waitingBody", { seconds: event.seconds }));
+    } else if (event.event === "remoteFallback") {
+      showOperation(t("operation.remoteTitle", { name: event.peerName }), t("operation.remoteBody"));
+    } else {
+      showOperation(t("operation.switchingTitle"), t("operation.switchingBody"));
+    }
+  };
+  try {
+    const result = await invoke<OperationResult>("switch_host", { targetId, onEvent });
+    showToast(result.title, result.detail, result.warning);
+  } catch (error) {
+    showToast(t("toast.switchFailed"), String(error), true);
+  } finally {
+    hideOperation();
+  }
 }
 
 async function peerCommand(command: "probe_peer" | "wake_peer", peerId: string): Promise<void> {
   try { const result = await invoke<OperationResult>(command, { peerId }); showToast(result.title, result.detail); }
-  catch (error) { showToast(command === "probe_peer" ? "連線測試失敗" : "喚醒失敗", String(error), true); }
+  catch (error) { showToast(command === "probe_peer" ? t("toast.probeFailed") : t("toast.wakeFailed"), String(error), true); }
 }
 
 async function checkForUpdates(manual: boolean): Promise<void> {
   if (isPreview) {
-    if (manual) showToast("無法檢查更新", "請從已安裝的 DisplayMux 執行更新檢查。", true);
+    if (manual) showToast(t("toast.updateUnavailable"), t("toast.updateUnavailableBody"), true);
     return;
   }
   const button = document.querySelector<HTMLButtonElement>("#update-button");
@@ -621,15 +696,15 @@ async function checkForUpdates(manual: boolean): Promise<void> {
     const update = await invoke<UpdateInfo>("check_for_update");
     pendingUpdate = update.available ? update : null;
     button?.classList.toggle("has-update", update.available);
-    button?.setAttribute("title", update.available ? `可更新至 ${update.version}` : "檢查更新");
+    button?.setAttribute("title", update.available ? t("update.availableTooltip", { version: update.version ?? "" }) : t("action.checkUpdates"));
     if (update.available) {
       if (manual) showUpdateDialog(update);
-      else showToast("有可用更新", `版本 ${update.version} 已發布；按上方下載按鈕查看。`);
+      else showToast(t("update.availableTitle"), t("update.availableBody", { version: update.version ?? "" }));
     } else if (manual) {
-      showToast("已是最新版本", `目前版本 ${update.currentVersion}。`);
+      showToast(t("update.latestTitle"), t("update.latestBody", { version: update.currentVersion }));
     }
   } catch (error) {
-    if (manual) showToast("無法檢查更新", String(error), true);
+    if (manual) showToast(t("toast.updateFailed"), String(error), true);
   } finally {
     button?.classList.remove("is-checking");
   }
@@ -637,8 +712,8 @@ async function checkForUpdates(manual: boolean): Promise<void> {
 
 function showUpdateDialog(update: UpdateInfo): void {
   setText("#update-title", `DisplayMux ${update.version ?? ""}`);
-  setText("#update-version", `目前版本 ${update.currentVersion}`);
-  setText("#update-notes", update.notes?.trim() || "此版本未提供更新說明。安裝檔會先通過 DisplayMux 簽章驗證。 ");
+  setText("#update-version", t("update.currentVersion", { version: update.currentVersion }));
+  setText("#update-notes", update.notes?.trim() || t("update.noneNotes"));
   const overlay = document.querySelector("#update-overlay");
   overlay?.classList.add("is-visible");
   overlay?.setAttribute("aria-hidden", "false");
@@ -654,27 +729,27 @@ async function installUpdate(): Promise<void> {
   const installButton = document.querySelector<HTMLButtonElement>("#update-install");
   const cancelButton = document.querySelector<HTMLButtonElement>("#update-cancel");
   const progress = document.querySelector<HTMLElement>("#update-progress");
-  if (installButton) { installButton.disabled = true; installButton.textContent = "準備下載"; }
+  if (installButton) { installButton.disabled = true; installButton.textContent = t("update.preparing"); }
   if (cancelButton) cancelButton.disabled = true;
   if (progress) progress.hidden = false;
   const onEvent = new Channel<UpdateDownloadEvent>();
   onEvent.onmessage = (event) => {
     if (event.event === "started") {
-      setText("#update-progress-label", "正在下載已簽章的更新套件");
+      setText("#update-progress-label", t("update.downloadingSigned"));
     } else if (event.event === "progress") {
       const percent = event.contentLength ? Math.min(100, Math.round(event.downloaded / event.contentLength * 100)) : 0;
       const bar = document.querySelector<HTMLElement>("#update-progress-bar");
       if (bar) bar.style.width = event.contentLength ? `${percent}%` : "35%";
-      setText("#update-progress-label", event.contentLength ? `已下載 ${percent}%` : "正在下載更新套件");
+      setText("#update-progress-label", event.contentLength ? t("update.downloaded", { percent }) : t("update.downloading"));
     } else {
-      setText("#update-progress-label", "簽章驗證完成，正在安裝並重新啟動");
+      setText("#update-progress-label", t("update.installing"));
     }
   };
   try {
     await invoke("install_update", { onEvent });
   } catch (error) {
-    showToast("更新未安裝", String(error), true);
-    if (installButton) { installButton.disabled = false; installButton.textContent = "重試下載與安裝"; }
+    showToast(t("toast.installFailed"), String(error), true);
+    if (installButton) { installButton.disabled = false; installButton.textContent = t("update.retry"); }
     if (cancelButton) cancelButton.disabled = false;
   }
 }
@@ -683,26 +758,45 @@ function parseInput(value: string): number | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   const parsed = /^0x/i.test(trimmed) ? Number.parseInt(trimmed.slice(2), 16) : Number.parseInt(trimmed, 10);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 255) throw new Error(`無法辨識輸入值「${trimmed}」；請輸入 0x01 至 0xFF`);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 255) throw new Error(t("input.parseError", { value: trimmed }));
   return parsed;
 }
 
 function inputName(value: number): string {
   const known = inputOptions.find((item) => item.value === value);
-  return known ? `${known.name} · ${known.code}` : `自訂輸入 · ${codeFor(value)}`;
+  return known ? `${localizedInputOptionName(known)} · ${known.code}` : t("input.custom", { code: codeFor(value) });
+}
+function localizedInputOptionName(input: InputOption): string {
+  const localized = new Map<number, string>([
+    [0x05, t("input.composite1")], [0x06, t("input.composite2")],
+    [0x09, t("input.tuner1")], [0x0a, t("input.tuner2")], [0x0b, t("input.tuner3")],
+    [0x0c, t("input.component1")], [0x0d, t("input.component2")], [0x0e, t("input.component3")],
+  ]);
+  return localized.get(input.value) ?? input.name;
 }
 function labelForCode(value: string): string {
-  try { const parsed = parseInput(value); return parsed == null ? "尚未設定" : inputName(parsed); }
-  catch { return "輸入格式無效"; }
+  try { const parsed = parseInput(value); return parsed == null ? t("input.unset") : inputName(parsed); }
+  catch { return t("input.invalid"); }
 }
 function codeFor(value: number): string { return `0x${value.toString(16).toUpperCase().padStart(2, "0")}`; }
 function platformName(value: Platform): string { return value === "mac" ? "macOS" : "Windows"; }
+function isUltrawideResolution(value: MonitorResolution): boolean { return value.height > 0 && value.width >= value.height * 2; }
+function resolutionSourceName(value: ResolutionSource | null): string {
+  if (value === "edid") return "EDID";
+  if (value === "coreGraphicsDisplayMode") return t("resolution.coreGraphics");
+  if (value === "windowsDisplayMode") return t("resolution.windows");
+  return t("resolution.unknown");
+}
 function sameFingerprint(left: Fingerprint, right: Fingerprint): boolean { return left.manufacturer_id.toUpperCase() === right.manufacturer_id.toUpperCase() && left.product_code.toUpperCase() === right.product_code.toUpperCase() && left.serial_number === right.serial_number; }
 function escapeHtml(value: string): string { return value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char] ?? char); }
 function cssEscape(value: string): string { return typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&"); }
 function setText(selector: string, value: string): void { const element = document.querySelector(selector); if (element) element.textContent = value; }
 function setInput(selector: string, value: string): void { const element = document.querySelector<HTMLInputElement>(selector); if (element) element.value = value; }
-function showOperation(title: string): void { setText("#operation-title", title); document.querySelector("#operation-overlay")?.classList.add("is-visible"); }
+function showOperation(title: string, detail?: string): void {
+  setText("#operation-title", title);
+  if (detail) setText("#operation-detail", detail);
+  document.querySelector("#operation-overlay")?.classList.add("is-visible");
+}
 function hideOperation(): void { document.querySelector("#operation-overlay")?.classList.remove("is-visible"); }
 let toastTimer = 0;
 function showToast(title: string, detail: string, warning = false): void {
@@ -713,8 +807,19 @@ function showToast(title: string, detail: string, warning = false): void {
 }
 
 async function bootstrap(): Promise<void> {
-  await refresh();
+  if (!isPreview) {
+    try { await invoke("set_locale", { locale }); } catch { /* Preview mode has no Tauri backend. */ }
+  }
+  await Promise.all([refresh(), renderAppVersion()]);
   if (settings.checkUpdates && !isPreview) window.setTimeout(() => void checkForUpdates(false), 1800);
+}
+
+async function renderAppVersion(): Promise<void> {
+  try {
+    setText("#app-version", `v${await getVersion()}`);
+  } catch {
+    setText("#app-version", `v${packageMetadata.version}`);
+  }
 }
 
 void bootstrap();
