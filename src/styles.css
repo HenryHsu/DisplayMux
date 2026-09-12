@@ -1161,6 +1161,67 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .operation-dialog h2 { margin: 0 0 10px; font-size: 22px; }
 .operation-dialog > p:last-child { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 
+.direct-switch-dialog {
+  width: min(460px, calc(100vw - 48px));
+  padding: 0;
+  border: 0;
+  border-radius: 18px;
+  background: var(--panel-bg);
+  color: var(--ink);
+  box-shadow: 0 26px 70px rgba(11, 20, 17, .28);
+}
+
+.direct-switch-dialog::backdrop {
+  background: rgba(16, 26, 22, .54);
+  backdrop-filter: blur(5px);
+}
+
+.direct-switch-content { padding: 32px; }
+
+.dialog-warning-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 20px;
+  border-radius: 12px;
+  background: #fff1e2;
+  color: var(--warning);
+}
+
+.dialog-warning-icon svg { width: 22px; height: 22px; }
+.direct-switch-dialog h2 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.025em; }
+.direct-switch-dialog p:last-of-type { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.65; }
+
+.direct-switch-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.direct-switch-actions button { height: 42px; }
+
+.direct-switch-confirm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 17px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--warning);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background .16s ease;
+}
+
+.direct-switch-confirm:hover { background: #83470f; }
+.direct-switch-confirm:focus-visible { outline: 3px solid rgba(163, 91, 24, .25); outline-offset: 2px; }
+.direct-switch-confirm svg { width: 16px; height: 16px; }
+
 .update-overlay {
   position: fixed;
   z-index: 22;
@@ -1301,6 +1362,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   .peer-row, .paired-route-card, .monitor-card-item { background: #1c2722; border-color: #293830; }
   .monitor-card-item.is-selected { background: #172d24; border-color: #2e5947; }
   .compat-note { background: #172d24; border-color: #285542; color: #9fe2c7; }
+  .dialog-warning-icon { background: #3a271a; }
   .operation-dialog, .update-dialog { background: #18221d; }
   .toast { background: #192620; border-color: #2f4c3d; }
   .toast.is-warning { background: #2b221a; border-color: #594129; }

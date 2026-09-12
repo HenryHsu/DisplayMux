@@ -2,7 +2,7 @@ import "@fontsource-variable/manrope";
 import {
   Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
   ExternalLink, Github, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
-  ShieldCheck, Trash2, UserRound, Zap,
+  ShieldCheck, Trash2, TriangleAlert, UserRound, Zap,
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -266,6 +266,18 @@ app.innerHTML = `
   </div>
   <datalist id="input-values"></datalist>
   <div class="operation-overlay" id="operation-overlay" aria-live="polite" aria-hidden="true"><div class="operation-dialog"><div class="spinner"></div><p class="section-kicker">SAFE SWITCH</p><h2 id="operation-title">正在執行</h2><p>必要時會先確認或喚醒目標主機，再切換唯一指定的共用螢幕。</p></div></div>
+  <dialog class="direct-switch-dialog" id="direct-switch-dialog" aria-labelledby="direct-switch-title" aria-describedby="direct-switch-description">
+    <div class="direct-switch-content">
+      <div class="dialog-warning-icon"><i data-lucide="triangle-alert"></i></div>
+      <p class="section-kicker">DIRECT SWITCH</p>
+      <h2 id="direct-switch-title">要直接切換螢幕嗎？</h2>
+      <p id="direct-switch-description">直接切換不會確認或喚醒目標主機。若對端離線，螢幕可能暫時黑畫面。</p>
+      <div class="direct-switch-actions">
+        <button class="scan-button" id="direct-switch-cancel" type="button">取消</button>
+        <button class="direct-switch-confirm" id="direct-switch-confirm" type="button"><i data-lucide="arrow-left-right"></i>仍要直接切換</button>
+      </div>
+    </div>
+  </dialog>
   <div class="update-overlay" id="update-overlay" aria-hidden="true">
     <div class="update-dialog">
       <p class="section-kicker">SIGNED UPDATE</p>
@@ -280,7 +292,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, UserRound, Zap };
+const iconSet = { Activity, ArrowLeftRight, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, TriangleAlert, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
@@ -290,6 +302,9 @@ document.querySelector<HTMLButtonElement>("#refresh-button")?.addEventListener("
 document.querySelector<HTMLButtonElement>("#update-button")?.addEventListener("click", () => pendingUpdate ? showUpdateDialog(pendingUpdate) : void checkForUpdates(true));
 document.querySelector<HTMLButtonElement>("#update-cancel")?.addEventListener("click", hideUpdateDialog);
 document.querySelector<HTMLButtonElement>("#update-install")?.addEventListener("click", () => void installUpdate());
+document.querySelector<HTMLButtonElement>("#direct-switch-cancel")?.addEventListener("click", hideDirectSwitchDialog);
+document.querySelector<HTMLButtonElement>("#direct-switch-confirm")?.addEventListener("click", confirmDirectSwitch);
+document.querySelector<HTMLDialogElement>("#direct-switch-dialog")?.addEventListener("close", () => { pendingDirectSwitchTarget = null; });
 document.querySelector<HTMLButtonElement>("#scan-button")?.addEventListener("click", () => void scanPeers());
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
 document.querySelector<HTMLInputElement>("#local-input")?.addEventListener("input", renderInputHints);
@@ -309,7 +324,7 @@ document.querySelector("#paired-routes")?.addEventListener("input", renderInputH
 document.querySelector("#host-route-grid")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id], [data-direct-switch-id], [data-probe-id], [data-wake-id]");
   if (button?.dataset.switchId) void switchHost(button.dataset.switchId);
-  if (button?.dataset.directSwitchId) void directSwitchHost(button.dataset.directSwitchId);
+  if (button?.dataset.directSwitchId) showDirectSwitchDialog(button.dataset.directSwitchId);
   if (button?.dataset.probeId) void peerCommand("probe_peer", button.dataset.probeId);
   if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
@@ -638,11 +653,30 @@ async function switchHost(targetId: string): Promise<void> {
 }
 
 async function directSwitchHost(targetId: string): Promise<void> {
-  if (!window.confirm("直接切換不會確認或喚醒目標主機。若對端離線，螢幕可能暫時黑畫面。仍要切換嗎？")) return;
   showOperation("正在直接切換本機 DDC/CI");
   try { const result = await invoke<OperationResult>("switch_host", { targetId, force: true }); showToast(result.title, result.detail, true); }
   catch (error) { showToast("直接切換失敗", String(error), true); }
   finally { hideOperation(); }
+}
+
+let pendingDirectSwitchTarget: string | null = null;
+
+function showDirectSwitchDialog(targetId: string): void {
+  const dialog = document.querySelector<HTMLDialogElement>("#direct-switch-dialog");
+  if (!dialog) return;
+  pendingDirectSwitchTarget = targetId;
+  if (!dialog.open) dialog.showModal();
+  document.querySelector<HTMLButtonElement>("#direct-switch-cancel")?.focus();
+}
+
+function hideDirectSwitchDialog(): void {
+  document.querySelector<HTMLDialogElement>("#direct-switch-dialog")?.close();
+}
+
+function confirmDirectSwitch(): void {
+  const targetId = pendingDirectSwitchTarget;
+  hideDirectSwitchDialog();
+  if (targetId) void directSwitchHost(targetId);
 }
 
 async function peerCommand(command: "probe_peer" | "wake_peer", peerId: string): Promise<void> {
