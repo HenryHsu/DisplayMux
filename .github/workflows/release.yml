@@ -108,12 +108,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="v${{ steps.app_version.outputs.version }}"
-          gh release view "$tag" --json body --jq .body > generated-notes.md
           gh release view "$tag" --json assets --jq .assets > release-assets.json
           node scripts/compose-release-notes.mjs \
             --tag "$tag" \
+            --repository "${{ github.repository }}" \
             --assets release-assets.json \
-            --generated generated-notes.md \
             --output release-notes.md
 
       - name: Publish signed release
