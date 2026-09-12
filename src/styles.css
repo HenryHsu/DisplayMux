@@ -584,6 +584,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .monitor-item-icon {
@@ -602,6 +603,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .monitor-identity strong {
@@ -613,9 +615,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .monitor-identity span {
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .monitor-select-btn {
+  flex: 0 0 auto;
+  min-width: 82px;
   height: 32px;
   padding: 0 14px;
   border: 0;
@@ -626,6 +631,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   background: var(--accent);
   color: #ffffff;
   transition: background .16s ease;
+  white-space: nowrap;
 }
 
 .monitor-select-btn:hover { background: var(--accent-hover); }
