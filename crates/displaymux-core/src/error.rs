@@ -38,3 +38,134 @@ pub enum DisplayMuxError {
     #[error("無法完成螢幕操作：{0}")]
     Backend(String),
 }
+
+impl DisplayMuxError {
+    pub fn localized_message(&self, traditional_chinese: bool) -> String {
+        if traditional_chinese {
+            return self.to_string();
+        }
+
+        match self {
+            Self::TargetNotFound =>
+                "The configured shared display was not found; no display was changed".to_owned(),
+            Self::AmbiguousTarget { count } => format!(
+                "Found {count} displays matching the shared display fingerprint; stopped to prevent controlling the wrong display"
+            ),
+            Self::MonitorNoLongerAvailable(id) =>
+                format!("The previously enumerated display is no longer available: {id}"),
+            Self::InvalidInput(value) => format!("Invalid display input value: 0x{value:02X}"),
+            Self::InvalidInputCode(value) => format!(
+                "Unrecognized display input value: {value}; enter 0x01 through 0xFF or decimal 1 through 255"
+            ),
+            Self::UnsupportedPlatform =>
+                "Display control is not available on this platform".to_owned(),
+            Self::InvalidMacAddress(value) => format!("Invalid MAC address: {value}"),
+            Self::WakeFailed(detail) => format!(
+                "Unable to send the Wake-on-LAN packet: {}",
+                english_detail(detail)
+            ),
+            Self::PeerUnavailable(detail) => format!(
+                "Unable to connect to the other host: {}",
+                english_detail(detail)
+            ),
+            Self::AuthenticationFailed =>
+                "The other host rejected an unauthenticated request".to_owned(),
+            Self::StaleRequest => "The request expired or may have been replayed".to_owned(),
+            Self::Backend(detail) => format!(
+                "Unable to complete the display operation: {}",
+                english_detail(detail)
+            ),
+        }
+    }
+}
+
+fn english_detail(detail: &str) -> String {
+    const PREFIXES: [(&str, &str); 13] = [
+        ("回應格式無效：", "Invalid response format: "),
+        (
+            "macOS 無法透過目前的 HDMI／USB-C／Thunderbolt 路徑使用 DDC/CI：",
+            "macOS cannot use DDC/CI through the current HDMI/USB-C/Thunderbolt path: ",
+        ),
+        (
+            "無法讀取共用螢幕目前的輸入來源：",
+            "Unable to read the shared display's current input: ",
+        ),
+        (
+            "無法切換共用螢幕輸入來源：",
+            "Unable to switch the shared display input: ",
+        ),
+        (
+            "無法連線 Windows WMI 螢幕資料：",
+            "Unable to connect to Windows WMI display data: ",
+        ),
+        (
+            "無法讀取 Windows 螢幕 EDID：",
+            "Unable to read the Windows display EDID: ",
+        ),
+        (
+            "無法判斷 Windows 內建螢幕：",
+            "Unable to identify the Windows built-in display: ",
+        ),
+        (
+            "無法解析 Windows 螢幕裝置路徑：",
+            "Unable to parse the Windows display device path: ",
+        ),
+        (
+            "無法取得 Windows 邏輯螢幕資訊：",
+            "Unable to get Windows logical display information: ",
+        ),
+        (
+            "無法取得 Windows 實體螢幕裝置路徑：",
+            "Unable to get the Windows physical display device path: ",
+        ),
+        (
+            "無法取得實體螢幕數量：",
+            "Unable to get the physical display count: ",
+        ),
+        (
+            "無法列舉實體螢幕控制介面：",
+            "Unable to enumerate physical display control interfaces: ",
+        ),
+        (
+            "無法列舉 Windows 邏輯螢幕：",
+            "Unable to enumerate Windows logical displays: ",
+        ),
+    ];
+    for (zh_tw, en) in PREFIXES {
+        if let Some(rest) = detail.strip_prefix(zh_tw) {
+            return format!("{en}{rest}");
+        }
+    }
+    match detail {
+        "無法讀取區域網路搜尋結果" => "Unable to read local network discovery results".to_owned(),
+        "連線逾時" => "Connection timed out".to_owned(),
+        "回應逾時" => "Response timed out".to_owned(),
+        "廣播位址格式無效" => "Invalid broadcast address".to_owned(),
+        "Windows 未提供螢幕裝置路徑；為避免誤控，已停止操作" =>
+            "Windows did not provide a display device path; stopped to prevent controlling the wrong display".to_owned(),
+        "顯示器 EDID 標頭、長度或 checksum 無效，無法安全識別裝置" =>
+            "The display EDID header, length, or checksum is invalid, so the device cannot be identified safely".to_owned(),
+        _ => detail.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_core_errors_in_both_supported_languages() {
+        let error = DisplayMuxError::AmbiguousTarget { count: 2 };
+
+        assert!(error.localized_message(true).contains("找到 2 台"));
+        assert!(error.localized_message(false).contains("Found 2 displays"));
+
+        let macos = DisplayMuxError::Backend(
+            "macOS 無法透過目前的 HDMI／USB-C／Thunderbolt 路徑使用 DDC/CI：checksum mismatch"
+                .to_owned(),
+        );
+        let message = macos.localized_message(false);
+        assert!(message.contains("current HDMI/USB-C/Thunderbolt path"));
+        assert!(!message.contains("無法"));
+    }
+}

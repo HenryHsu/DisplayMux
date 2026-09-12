@@ -38,7 +38,11 @@
     ],
     "category": "Utility",
     "shortDescription": "Safely switch one shared monitor between two computers",
-    "longDescription": "DisplayMux coordinates Windows and macOS over a local network and changes only the configured shared monitor input."
+    "longDescription": "DisplayMux coordinates Windows and macOS over a local network and changes only the configured shared monitor input.",
+    "resources": {
+      "i18n/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
+      "i18n/zh-Hant.lproj/InfoPlist.strings": "zh-Hant.lproj/InfoPlist.strings"
+    }
   },
   "plugins": {
     "updater": {

@@ -93,6 +93,10 @@ mDNS 搜尋只在區域網路內廣播服務資訊。自動更新檢查不會在
 
 需求：Rust 1.85+、Node.js 22+、pnpm 10+。macOS 建置另需 Xcode Command Line Tools。
 
+### 多國語言
+
+桌面介面目前提供英文（`en`）與繁體中文（`zh-TW`）。啟動時會依作業系統提供給 WebView 的語言偏好自動選擇；`zh-TW`、`zh-Hant`、`zh-HK` 與 `zh-MO` 使用繁體中文，其餘尚未支援的語言回退英文。前端字串集中在 `src/locales/`，共用語系偵測、fallback 與參數插值位於 `src/i18n.ts`。新增語言時應建立完整資源檔，不要在畫面元件中直接加入使用者可見字串。
+
 ```powershell
 pnpm install --frozen-lockfile
 pnpm tauri dev
