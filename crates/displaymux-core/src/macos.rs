@@ -2,7 +2,7 @@ use ddc::Ddc;
 use ddc_macos::Monitor;
 
 use crate::{
-    DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint,
+    edid, DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint,
     MonitorId, MonitorResolution,
 };
 
@@ -63,10 +63,12 @@ fn find_monitor(monitor_id: &MonitorId) -> Result<Monitor, DisplayMuxError> {
 }
 
 fn descriptor(monitor: &Monitor) -> MonitorDescriptor {
-    let (fingerprint, max_resolution) = monitor
-        .edid()
-        .and_then(|edid| match fingerprint_from_edid(&edid) {
-            Ok(fingerprint) => Some((fingerprint, resolution_from_edid(&edid))),
+    let raw_edid = monitor.edid();
+    let handle = monitor.handle();
+    let fingerprint = raw_edid
+        .as_deref()
+        .and_then(|value| match fingerprint_from_edid(value) {
+            Ok(fingerprint) => Some(fingerprint),
             Err(error) => {
                 tracing::warn!(
                     monitor = %monitor.description(),
@@ -77,23 +79,23 @@ fn descriptor(monitor: &Monitor) -> MonitorDescriptor {
             }
         })
         .unwrap_or_else(|| {
-            let handle = monitor.handle();
-            (
-                fingerprint_from_native_ids(
-                    handle.vendor_number(),
-                    handle.model_number(),
-                    monitor.serial_number(),
-                ),
-                None,
+            fingerprint_from_native_ids(
+                handle.vendor_number(),
+                handle.model_number(),
+                monitor.serial_number(),
             )
         });
+    let (max_resolution, resolution_source) =
+        edid::preferred_resolution(raw_edid.as_deref(), core_graphics_resolution(monitor));
 
     MonitorDescriptor {
         id: id_for(monitor),
         name: monitor.description(),
         fingerprint,
         active: true,
+        built_in: handle.is_builtin(),
         max_resolution,
+        resolution_source,
     }
 }
 
@@ -102,9 +104,9 @@ fn id_for(monitor: &Monitor) -> MonitorId {
 }
 
 fn fingerprint_from_edid(edid: &[u8]) -> Result<MonitorFingerprint, DisplayMuxError> {
-    if edid.len() < 16 {
+    if !edid::is_valid(edid) {
         return Err(DisplayMuxError::Backend(
-            "顯示器 EDID 長度不足，無法安全識別裝置".to_owned(),
+            "顯示器 EDID 標頭、長度或 checksum 無效，無法安全識別裝置".to_owned(),
         ));
     }
 
@@ -161,39 +163,25 @@ fn backend_error(error: impl std::fmt::Display) -> DisplayMuxError {
     ))
 }
 
-fn resolution_from_edid(edid: &[u8]) -> Option<MonitorResolution> {
-    if edid.len() < 128 {
-        return None;
-    }
-
-    let mut max_res: Option<MonitorResolution> = None;
-
-    // Check Detailed Timing Descriptors in base EDID block (offsets 54, 72, 90, 108)
-    for offset in [54, 72, 90, 108] {
-        if offset + 18 > edid.len() {
-            break;
-        }
-        if edid[offset] != 0 || edid[offset + 1] != 0 {
-            let h_active = (((edid[offset + 4] as u32) & 0xF0) << 4) | (edid[offset + 2] as u32);
-            let v_active = (((edid[offset + 7] as u32) & 0xF0) << 4) | (edid[offset + 5] as u32);
-
-            if h_active > 0 && v_active > 0 {
-                let is_larger = max_res.map_or(true, |curr| {
-                    (h_active as u64 * v_active as u64) > (curr.width as u64 * curr.height as u64)
-                });
-                if is_larger {
-                    max_res = Some(MonitorResolution::new(h_active, v_active));
-                }
-            }
-        }
-    }
-
-    max_res
+fn core_graphics_resolution(monitor: &Monitor) -> Option<MonitorResolution> {
+    let mode = monitor.handle().display_mode()?;
+    let width = u32::try_from(mode.pixel_width()).ok()?;
+    let height = u32::try_from(mode.pixel_height()).ok()?;
+    (width > 0 && height > 0).then(|| MonitorResolution::new(width, height))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn finalize_edid(edid: &mut [u8; 128]) {
+        edid[..8].copy_from_slice(&[0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]);
+        edid[127] = 0_u8.wrapping_sub(
+            edid[..127]
+                .iter()
+                .fold(0_u8, |sum, byte| sum.wrapping_add(*byte)),
+        );
+    }
 
     #[test]
     fn parses_asus_edid_identity() {
@@ -202,6 +190,7 @@ mod tests {
         [edid[8], edid[9]] = manufacturer.to_be_bytes();
         [edid[10], edid[11]] = 0x3554_u16.to_le_bytes();
         [edid[12], edid[13], edid[14], edid[15]] = 278_504_u32.to_le_bytes();
+        finalize_edid(&mut edid);
 
         let fingerprint = fingerprint_from_edid(&edid).unwrap();
 
@@ -220,25 +209,5 @@ mod tests {
         assert_eq!(fingerprint.manufacturer_id, "AUS");
         assert_eq!(fingerprint.product_code, "3554");
         assert_eq!(fingerprint.serial_number.as_deref(), Some("278504"));
-    }
-
-    #[test]
-    fn parses_edid_resolution_and_ultrawide() {
-        let mut edid = [0_u8; 128];
-        // DTD at offset 54: 3440 x 1440
-        // Pixel clock non-zero
-        edid[54] = 0x01;
-        edid[55] = 0x01;
-        // H active = 3440 = 0x0D70 -> lower 8 bits = 0x70, upper nibble = 0x0D
-        edid[56] = 0x70;
-        edid[58] = 0xD0; // upper 4 bits = 0xD
-                         // V active = 1440 = 0x05A0 -> lower 8 bits = 0xA0, upper nibble = 0x05
-        edid[59] = 0xA0;
-        edid[61] = 0x50; // upper 4 bits = 0x5
-
-        let res = resolution_from_edid(&edid).expect("resolution parsed");
-        assert_eq!(res.width, 3440);
-        assert_eq!(res.height, 1440);
-        assert!(res.is_ultrawide());
     }
 }

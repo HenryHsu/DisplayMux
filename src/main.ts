@@ -8,6 +8,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 
 type Platform = "windows" | "mac";
+type ResolutionSource = "edid" | "coreGraphicsDisplayMode" | "windowsDisplayMode";
 
 interface MonitorResolution {
   width: number;
@@ -24,14 +25,17 @@ interface MonitorDescriptor {
   id: string;
   name: string;
   active: boolean;
+  builtIn: boolean;
   fingerprint: Fingerprint;
   maxResolution?: MonitorResolution | null;
+  resolutionSource?: ResolutionSource | null;
 }
 
 interface SelectedMonitor {
   name: string;
   fingerprint: Fingerprint;
   maxResolution?: MonitorResolution | null;
+  resolutionSource?: ResolutionSource | null;
 }
 
 interface HostRoute {
@@ -63,6 +67,7 @@ interface DashboardState {
   agentConfigured: boolean;
   ddcAvailable: boolean;
   monitorStatus: string;
+  selectionNotice: string | null;
   monitors: MonitorDescriptor[];
 }
 
@@ -98,7 +103,7 @@ const previewSettings: AppSettings = {
 };
 const previewDashboard: DashboardState = {
   platform: "windows", localHost: "windows", agentConfigured: false, ddcAvailable: false,
-  monitorStatus: "請在設定頁選擇共用螢幕", monitors: [],
+  monitorStatus: "請在設定頁選擇共用螢幕", selectionNotice: null, monitors: [],
 };
 
 let settings = previewSettings;
@@ -128,7 +133,7 @@ app.innerHTML = `
       <header class="topbar">
         <h1 id="page-title">共用螢幕切換中心</h1>
         <div class="topbar-actions">
-          <div class="agent-pill" id="agent-pill"><span class="status-dot"></span><span>讀取中</span></div>
+          <div class="agent-pill" id="agent-pill"><span class="status-dot"></span><span>網路 Agent 讀取中</span></div>
           <button class="icon-button" id="update-button" title="檢查更新"><i data-lucide="download"></i></button>
           <button class="icon-button" id="refresh-button" title="重新整理"><i data-lucide="refresh-cw"></i></button>
         </div>
@@ -232,7 +237,7 @@ app.innerHTML = `
           <div class="note-list">
             <article><span>01</span><div><h3>更換螢幕</h3><p>更換後請重新選擇共用螢幕。舊指紋找不到時，DisplayMux 會停止而不會改動其他螢幕。</p></div></article>
             <article><span>02</span><div><h3>輸入值</h3><p>DisplayMux 使用 DDC/CI VCP 0x60。常見值可自動命名，但廠商自訂值應依螢幕選單或說明書確認。</p></div></article>
-            <article><span>03</span><div><h3>系統睡眠</h3><p>切換至遠端主機前會先測試連線，必要時送出 Wake-on-LAN，等待 Agent 回應後才切換。</p></div></article>
+            <article><span>03</span><div><h3>安全切換與直接切換</h3><p>安全切換會先確認或喚醒目標主機；直接切換只使用本機 DDC/CI，不需要網路，但對端離線時可能黑畫面。</p></div></article>
             <article><span>04</span><div><h3>MacBook 轉接器</h3><p>若 USB-C 或 HDMI 轉接器未轉送 DDC，可由另一台已配對、可控制螢幕的主機代為切換。</p></div></article>
           </div>
         </div>
@@ -282,8 +287,9 @@ document.querySelector("#paired-routes")?.addEventListener("click", (event) => {
 });
 document.querySelector("#paired-routes")?.addEventListener("input", renderInputHints);
 document.querySelector("#host-route-grid")?.addEventListener("click", (event) => {
-  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id], [data-probe-id], [data-wake-id]");
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-switch-id], [data-direct-switch-id], [data-probe-id], [data-wake-id]");
   if (button?.dataset.switchId) void switchHost(button.dataset.switchId);
+  if (button?.dataset.directSwitchId) void directSwitchHost(button.dataset.directSwitchId);
   if (button?.dataset.probeId) void peerCommand("probe_peer", button.dataset.probeId);
   if (button?.dataset.wakeId) void peerCommand("wake_peer", button.dataset.wakeId);
 });
@@ -298,8 +304,9 @@ function showPage(page: string): void {
 async function refresh(): Promise<void> {
   document.querySelector("#refresh-button svg")?.classList.add("is-spinning");
   try {
-    [dashboard, settings, inputOptions] = await Promise.all([
-      invoke<DashboardState>("get_dashboard_state"), invoke<AppSettings>("get_settings"), invoke<InputOption[]>("get_input_options"),
+    dashboard = await invoke<DashboardState>("get_dashboard_state");
+    [settings, inputOptions] = await Promise.all([
+      invoke<AppSettings>("get_settings"), invoke<InputOption[]>("get_input_options"),
     ]);
     try { discoveredPeers = await invoke<DiscoveredPeer[]>("discover_peers"); } catch { discoveredPeers = []; }
     isPreview = false;
@@ -307,6 +314,9 @@ async function refresh(): Promise<void> {
     dashboard = previewDashboard; settings = previewSettings; inputOptions = standardInputs; discoveredPeers = []; isPreview = true;
   } finally { document.querySelector("#refresh-button svg")?.classList.remove("is-spinning"); }
   renderState();
+  if (!isPreview && dashboard.selectionNotice) {
+    showToast("共用螢幕已自動更新", dashboard.selectionNotice);
+  }
 }
 
 function getFlatMonitorSvg(isUltrawide: boolean): string {
@@ -376,16 +386,19 @@ function getFlatMonitorSvg(isUltrawide: boolean): string {
 
 function renderState(): void {
   let currentResolution: MonitorResolution | null = null;
+  let currentResolutionSource: ResolutionSource | null = null;
   if (settings.sharedMonitor) {
     setText("#shared-monitor-name", settings.sharedMonitor.name);
-    setText("#monitor-status", "");
+    setText("#monitor-status", dashboard.monitorStatus);
     currentResolution = settings.sharedMonitor.maxResolution ?? null;
+    currentResolutionSource = settings.sharedMonitor.resolutionSource ?? null;
     if (!currentResolution) {
       const match = dashboard.monitors.find((m) =>
         sameFingerprint(m.fingerprint, settings.sharedMonitor!.fingerprint)
       );
       if (match?.maxResolution) {
         currentResolution = match.maxResolution;
+        currentResolutionSource = match.resolutionSource ?? null;
       }
     }
   } else {
@@ -393,14 +406,11 @@ function renderState(): void {
     setText("#monitor-status", dashboard.monitorStatus || "請在「螢幕與主機」設定頁選擇共用螢幕");
     if (dashboard.monitors.length > 0 && dashboard.monitors[0].maxResolution) {
       currentResolution = dashboard.monitors[0].maxResolution;
+      currentResolutionSource = dashboard.monitors[0].resolutionSource ?? null;
     }
   }
 
-  const isUltrawide = Boolean(
-    currentResolution &&
-    currentResolution.height > 0 &&
-    (currentResolution.width / currentResolution.height) >= 2.0
-  );
+  const isUltrawide = Boolean(currentResolution && isUltrawideResolution(currentResolution));
 
   const monitorWrap = document.querySelector("#flat-monitor-wrap");
   if (monitorWrap) {
@@ -411,8 +421,8 @@ function renderState(): void {
   if (ratioBadge) {
     if (currentResolution) {
       ratioBadge.textContent = isUltrawide
-        ? `21:9 · ${currentResolution.width}×${currentResolution.height}`
-        : `16:9 · ${currentResolution.width}×${currentResolution.height}`;
+        ? `21:9 · ${currentResolution.width}×${currentResolution.height} · ${resolutionSourceName(currentResolutionSource)}`
+        : `16:9 · ${currentResolution.width}×${currentResolution.height} · ${resolutionSourceName(currentResolutionSource)}`;
     } else {
       ratioBadge.textContent = isUltrawide ? "21:9" : "16:9";
     }
@@ -424,7 +434,7 @@ function renderState(): void {
   setText("#wake-health", settings.peers.some((peer) => peer.macAddress) ? "正常" : (settings.peers.length ? "無 MAC 資料" : "尚未加入主機"));
   const pill = document.querySelector("#agent-pill");
   pill?.classList.toggle("is-ready", dashboard.agentConfigured);
-  if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? "介面預覽" : dashboard.agentConfigured ? "Agent 運作中" : "Agent 未設定";
+  if (pill) pill.querySelector("span:last-child")!.textContent = isPreview ? "介面預覽" : dashboard.agentConfigured ? "網路 Agent 已設定" : "網路 Agent 未設定（不影響 DDC）";
   setInput("#local-host-name", dashboard.localHost === "windows" ? "這台 Windows PC" : "這台 Mac");
   setInput("#local-input", settings.localInput == null ? "" : codeFor(settings.localInput));
   setInput("#shared-key", settings.sharedKey);
@@ -450,14 +460,14 @@ function renderMonitors(): void {
     const fp = monitor.fingerprint;
     const res = monitor.maxResolution;
     const resText = res
-      ? `(${res.width}×${res.height} ${res.width / res.height >= 2.0 ? "21:9" : "16:9"})`
+      ? `(${res.width}×${res.height} ${isUltrawideResolution(res) ? "21:9" : "16:9"} · ${resolutionSourceName(monitor.resolutionSource ?? null)})`
       : "";
     return `<article class="monitor-card-item ${isSelected ? "is-selected" : ""}">
       <div class="monitor-item-left">
         <div class="monitor-item-icon"><i data-lucide="monitor"></i></div>
         <div class="monitor-identity">
           <strong>${escapeHtml(monitor.name)}</strong>
-          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? "無序號")} ${resText} ${dashboard.ddcAvailable ? "(DDC/CI 已就緒)" : ""}</span>
+          <span>${escapeHtml(fp.manufacturer_id)} / ${escapeHtml(fp.product_code)} / ${escapeHtml(fp.serial_number ?? "無序號")} ${resText} (DDC/CI 可控制)</span>
         </div>
       </div>
       <button type="button" class="monitor-select-btn ${isSelected ? "is-selected" : ""}" data-monitor-id="${escapeHtml(monitor.id)}" ${isSelected ? "disabled" : ""}>
@@ -532,11 +542,13 @@ function renderHostRoutes(): void {
             <span class="active-toggle-indicator"></span>
           </div>
         ` : `
-          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || !settings.sharedMonitor ? "disabled" : ""}>
+          <button class="switch-button primary" data-switch-id="${escapeHtml(route.id)}" ${route.input == null || !dashboard.ddcAvailable ? "disabled" : ""}>
             <i data-lucide="arrow-left-right"></i>
-            <span>切換至此主機</span>
+            <span>安全切換至此主機</span>
           </button>
           <div class="route-tools">
+            <button class="text-button" type="button" data-direct-switch-id="${escapeHtml(route.id)}" ${route.input == null || !dashboard.ddcAvailable ? "disabled" : ""}>直接切換</button>
+            <span class="tool-sep">·</span>
             <button class="text-button" type="button" data-probe-id="${escapeHtml(route.id)}">測試連線</button>
             <span class="tool-sep">·</span>
             <button class="text-button" type="button" data-wake-id="${escapeHtml(route.id)}">送出喚醒</button>
@@ -601,7 +613,15 @@ async function saveSettings(event: SubmitEvent): Promise<void> {
 async function switchHost(targetId: string): Promise<void> {
   showOperation("正在確認主機與共用螢幕");
   try { const result = await invoke<OperationResult>("switch_host", { targetId, force: false }); showToast(result.title, result.detail); }
-  catch (error) { showToast("切換失敗", String(error), true); }
+  catch (error) { showToast("安全切換未執行", String(error), true); }
+  finally { hideOperation(); }
+}
+
+async function directSwitchHost(targetId: string): Promise<void> {
+  if (!window.confirm("直接切換不會確認或喚醒目標主機。若對端離線，螢幕可能暫時黑畫面。仍要切換嗎？")) return;
+  showOperation("正在直接切換本機 DDC/CI");
+  try { const result = await invoke<OperationResult>("switch_host", { targetId, force: true }); showToast(result.title, result.detail, true); }
+  catch (error) { showToast("直接切換失敗", String(error), true); }
   finally { hideOperation(); }
 }
 
@@ -697,6 +717,13 @@ function labelForCode(value: string): string {
 }
 function codeFor(value: number): string { return `0x${value.toString(16).toUpperCase().padStart(2, "0")}`; }
 function platformName(value: Platform): string { return value === "mac" ? "macOS" : "Windows"; }
+function isUltrawideResolution(value: MonitorResolution): boolean { return value.height > 0 && value.width >= value.height * 2; }
+function resolutionSourceName(value: ResolutionSource | null): string {
+  if (value === "edid") return "EDID";
+  if (value === "coreGraphicsDisplayMode") return "CoreGraphics 實體像素";
+  if (value === "windowsDisplayMode") return "Windows 顯示模式";
+  return "來源未知";
+}
 function sameFingerprint(left: Fingerprint, right: Fingerprint): boolean { return left.manufacturer_id.toUpperCase() === right.manufacturer_id.toUpperCase() && left.product_code.toUpperCase() === right.product_code.toUpperCase() && left.serial_number === right.serial_number; }
 function escapeHtml(value: string): string { return value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char] ?? char); }
 function cssEscape(value: string): string { return typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&"); }

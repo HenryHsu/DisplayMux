@@ -126,7 +126,9 @@ mod tests {
             name: id.to_owned(),
             fingerprint: fingerprint(vendor, product, serial),
             active: true,
+            built_in: false,
             max_resolution: None,
+            resolution_source: None,
         }
     }
 

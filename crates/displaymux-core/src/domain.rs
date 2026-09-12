@@ -65,11 +65,16 @@ impl MonitorResolution {
     }
 
     pub fn is_ultrawide(&self) -> bool {
-        if self.height == 0 {
-            return false;
-        }
-        (self.width as f64 / self.height as f64) >= 2.0
+        self.height != 0 && u64::from(self.width) >= u64::from(self.height) * 2
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResolutionSource {
+    Edid,
+    CoreGraphicsDisplayMode,
+    WindowsDisplayMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,7 +85,11 @@ pub struct MonitorDescriptor {
     pub fingerprint: MonitorFingerprint,
     pub active: bool,
     #[serde(default)]
+    pub built_in: bool,
+    #[serde(default)]
     pub max_resolution: Option<MonitorResolution>,
+    #[serde(default)]
+    pub resolution_source: Option<ResolutionSource>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,11 +202,19 @@ mod tests {
 
     #[test]
     fn identifies_ultrawide_resolutions() {
-        let ultrawide = MonitorResolution::new(3440, 1440);
-        assert!(ultrawide.is_ultrawide());
+        for resolution in [
+            MonitorResolution::new(3440, 1440),
+            MonitorResolution::new(2560, 1080),
+        ] {
+            assert!(resolution.is_ultrawide(), "{resolution:?}");
+        }
 
-        let standard = MonitorResolution::new(2560, 1440);
-        assert!(!standard.is_ultrawide());
+        for resolution in [
+            MonitorResolution::new(2560, 1440),
+            MonitorResolution::new(3840, 2160),
+        ] {
+            assert!(!resolution.is_ultrawide(), "{resolution:?}");
+        }
 
         let zero = MonitorResolution::new(1920, 0);
         assert!(!zero.is_ultrawide());

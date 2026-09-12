@@ -14,7 +14,7 @@ use displaymux_core::{
     AgentAction, AgentClient, AgentResponse, AgentServer, DestinationHost, DiscoveredPeer,
     DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService, MacAddress,
     MdnsPeerDiscovery, MonitorControl, MonitorDescriptor, MonitorFingerprint, PeerDiscovery,
-    PeerEndpoint, SwitchMode, SwitchOutcome, WakeTarget, DEFAULT_AGENT_PORT,
+    PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget, DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Manager, State};
@@ -32,6 +32,19 @@ struct SelectedMonitor {
     fingerprint: MonitorFingerprint,
     #[serde(default)]
     max_resolution: Option<displaymux_core::MonitorResolution>,
+    #[serde(default)]
+    resolution_source: Option<ResolutionSource>,
+}
+
+impl From<&MonitorDescriptor> for SelectedMonitor {
+    fn from(monitor: &MonitorDescriptor) -> Self {
+        Self {
+            name: monitor.name.clone(),
+            fingerprint: monitor.fingerprint.clone(),
+            max_resolution: monitor.max_resolution,
+            resolution_source: monitor.resolution_source,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,7 +128,7 @@ impl Default for LegacySettings {
 }
 
 struct AppRuntime {
-    settings: RwLock<AppSettings>,
+    settings: Arc<RwLock<AppSettings>>,
     settings_path: PathBuf,
     agent_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     discovery: Option<MdnsPeerDiscovery>,
@@ -129,7 +142,25 @@ struct DashboardState {
     agent_configured: bool,
     ddc_available: bool,
     monitor_status: String,
+    selection_notice: Option<String>,
     monitors: Vec<MonitorDescriptor>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MonitorSelectionChange {
+    SelectedOnlyMonitor {
+        name: String,
+    },
+    ReplacedMissingMonitor {
+        previous: String,
+        replacement: String,
+    },
+    RefreshedMetadata,
+}
+
+struct MonitorInventory {
+    detected: Vec<MonitorDescriptor>,
+    controllable: Vec<MonitorDescriptor>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -211,17 +242,14 @@ fn remove_peer(peer_id: String, state: State<'_, AppRuntime>) -> Result<AppSetti
 
 #[tauri::command]
 fn select_monitor(monitor_id: String, state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
-    let monitor = enumerate_monitors()
+    let monitor = enumerate_monitor_inventory()
         .map_err(user_error)?
+        .controllable
         .into_iter()
         .find(|monitor| monitor.id.as_str() == monitor_id)
         .ok_or_else(|| "找不到這台螢幕，請重新整理後再選擇".to_owned())?;
     let mut settings = read_settings(&state)?;
-    settings.shared_monitor = Some(SelectedMonitor {
-        name: monitor.name,
-        fingerprint: monitor.fingerprint,
-        max_resolution: monitor.max_resolution,
-    });
+    settings.shared_monitor = Some(SelectedMonitor::from(&monitor));
     store_settings(&state, settings)
 }
 
@@ -338,24 +366,59 @@ async fn install_update(
 
 #[tauri::command]
 fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, String> {
-    let settings = read_settings(&state)?;
-    let (monitors, monitor_status) = match enumerate_monitors() {
-        Ok(monitors) => {
+    let mut settings = read_settings(&state)?;
+    let mut selection_notice = None;
+    let (monitors, monitor_status) = match enumerate_monitor_inventory() {
+        Ok(inventory) => {
+            if let Some(change) = reconcile_monitor_selection(
+                &mut settings,
+                &inventory.detected,
+                &inventory.controllable,
+            ) {
+                store_settings(&state, settings.clone())?;
+                selection_notice = match change {
+                    MonitorSelectionChange::SelectedOnlyMonitor { name } => {
+                        Some(format!("已自動選取唯一可控制的 DDC/CI 螢幕：{name}"))
+                    }
+                    MonitorSelectionChange::ReplacedMissingMonitor {
+                        previous,
+                        replacement,
+                    } => Some(format!(
+                        "先前選取的 {previous} 已消失；已安全更新為唯一可控制的 {replacement}"
+                    )),
+                    MonitorSelectionChange::RefreshedMetadata => None,
+                };
+            }
             let selected = settings.shared_monitor.as_ref();
             let target_found = selected.is_some_and(|selected| {
-                monitors
+                inventory
+                    .controllable
                     .iter()
                     .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
             });
-            let status = match (selected, target_found, monitors.is_empty()) {
-                (None, _, _) => "尚未選擇共用螢幕；目前不會控制任何螢幕".to_owned(),
-                (Some(selected), true, _) => format!("已鎖定共用螢幕：{}", selected.name),
-                (Some(_), false, true) => "目前沒有可用的 DDC/CI 顯示器".to_owned(),
-                (Some(selected), false, false) => {
+            let target_detected = selected.is_some_and(|selected| {
+                inventory
+                    .detected
+                    .iter()
+                    .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
+            });
+            let status = match (
+                selected,
+                target_found,
+                target_detected,
+                inventory.controllable.is_empty(),
+            ) {
+                (None, _, _, _) => "尚未選擇共用螢幕；目前不會控制任何螢幕".to_owned(),
+                (Some(selected), true, _, _) => format!("已鎖定共用螢幕：{}", selected.name),
+                (Some(selected), false, true, _) => {
+                    format!("已偵測到 {}，但目前無法讀取 DDC/CI 輸入", selected.name)
+                }
+                (Some(_), false, false, true) => "目前沒有可用的 DDC/CI 顯示器".to_owned(),
+                (Some(selected), false, false, false) => {
                     format!("找不到先前選擇的共用螢幕：{}", selected.name)
                 }
             };
-            (monitors, status)
+            (inventory.controllable, status)
         }
         Err(error) => (Vec::new(), error.to_string()),
     };
@@ -370,6 +433,7 @@ fn get_dashboard_state(state: State<'_, AppRuntime>) -> Result<DashboardState, S
         agent_configured: has_valid_shared_key(&settings.shared_key),
         ddc_available,
         monitor_status,
+        selection_notice,
         monitors,
     })
 }
@@ -421,22 +485,19 @@ async fn switch_host(
             .ok_or_else(|| "尚未設定這台主機使用的螢幕輸入".to_owned())?
     };
     let mut peer_woken = false;
-    if target_id != "local" && !force {
+    if requires_network_preflight(&target_id, force) {
         let target = find_peer(&settings, &target_id)?;
-        if request_peer(&settings, target, AgentAction::Ping)
-            .await
-            .is_err()
-        {
-            wake_route(&settings, target).await?;
-            peer_woken = true;
-            wait_until_peer_ready(&settings, target).await?;
-        }
+        peer_woken = prepare_safe_switch(&settings, target).await?;
     }
     match run_local_switch(&settings, input) {
-        Ok(outcome) => Ok(outcome_result(outcome, peer_woken)),
+        Ok(outcome) => Ok(outcome_result(
+            outcome,
+            peer_woken,
+            force && target_id != "local",
+        )),
         Err(local_error) => {
             let executor = if target_id == "local" {
-                settings.peers.first()
+                (settings.peers.len() == 1).then(|| &settings.peers[0])
             } else {
                 settings.peers.iter().find(|peer| peer.id == target_id)
             }
@@ -460,8 +521,16 @@ async fn switch_host(
     }
 }
 
-fn outcome_result(outcome: SwitchOutcome, peer_woken: bool) -> OperationResult {
-    match outcome {
+fn requires_network_preflight(target_id: &str, direct: bool) -> bool {
+    target_id != "local" && !direct
+}
+
+fn outcome_result(
+    outcome: SwitchOutcome,
+    peer_woken: bool,
+    direct_without_readiness_check: bool,
+) -> OperationResult {
+    let mut result = match outcome {
         SwitchOutcome::DryRun { .. } => OperationResult {
             title: "檢查完成".to_owned(),
             detail: "未變更螢幕輸入。".to_owned(),
@@ -486,7 +555,39 @@ fn outcome_result(outcome: SwitchOutcome, peer_woken: bool) -> OperationResult {
             ),
             peer_woken,
         },
+    };
+    if direct_without_readiness_check {
+        result.title = "已直接切換共用螢幕".to_owned();
+        result
+            .detail
+            .push_str(" 未確認目標主機是否就緒；若該主機離線，螢幕可能暫時呈現黑畫面。");
     }
+    result
+}
+
+async fn prepare_safe_switch(settings: &AppSettings, peer: &HostRoute) -> Result<bool, String> {
+    if !has_valid_shared_key(&settings.shared_key) {
+        return Err(format!(
+            "網路 Agent 尚未設定至少 {MIN_SHARED_KEY_LENGTH} 個字元的配對密碼。可改用「直接切換」；本機 DDC/CI 不需要配對密碼，但對端離線時可能黑畫面。"
+        ));
+    }
+    if request_peer(settings, peer, AgentAction::Ping)
+        .await
+        .is_ok()
+    {
+        return Ok(false);
+    }
+
+    if let Err(error) = wake_route(settings, peer).await {
+        return Err(format!(
+            "無法確認 {} 已就緒，且無法自動喚醒（{}）。可改用「直接切換」，但對端離線時可能黑畫面。",
+            peer.name, error
+        ));
+    }
+    wait_until_peer_ready(settings, peer)
+        .await
+        .map_err(|error| format!("{error} 可改用「直接切換」，但對端離線時可能黑畫面。"))?;
+    Ok(true)
 }
 
 async fn wait_until_peer_ready(settings: &AppSettings, peer: &HostRoute) -> Result<(), String> {
@@ -646,11 +747,11 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
         SocketAddr::from(([0, 0, 0, 0], DEFAULT_AGENT_PORT)),
         Arc::<[u8]>::from(settings.shared_key.as_bytes()),
     );
-    let selected_monitor = settings.shared_monitor.map(|monitor| monitor.fingerprint);
+    let live_settings = Arc::clone(&state.settings);
     *current_task = Some(tauri::async_runtime::spawn(async move {
         let result = server
             .run(move |action| {
-                let selected_monitor = selected_monitor.clone();
+                let live_settings = Arc::clone(&live_settings);
                 async move {
                     match action {
                         AgentAction::Ping => AgentResponse {
@@ -658,7 +759,13 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                             message: "DisplayMux Agent 已就緒".to_owned(),
                         },
                         AgentAction::SwitchInput { input } => {
-                            let Some(fingerprint) = selected_monitor else {
+                            let fingerprint = live_settings.read().ok().and_then(|settings| {
+                                settings
+                                    .shared_monitor
+                                    .as_ref()
+                                    .map(|monitor| monitor.fingerprint.clone())
+                            });
+                            let Some(fingerprint) = fingerprint else {
                                 return AgentResponse {
                                     ready: false,
                                     message: "這台主機尚未選擇共用螢幕".to_owned(),
@@ -816,8 +923,77 @@ fn run_switch(
     service.switch_to_input(input, SwitchMode::Apply)
 }
 
-fn enumerate_monitors() -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
-    platform_controller()?.enumerate()
+fn enumerate_monitor_inventory() -> Result<MonitorInventory, DisplayMuxError> {
+    let controller = platform_controller()?;
+    monitor_inventory(&controller)
+}
+
+fn monitor_inventory<C: MonitorControl>(
+    controller: &C,
+) -> Result<MonitorInventory, DisplayMuxError> {
+    let detected = controller.enumerate()?;
+    let controllable = detected
+        .iter()
+        .filter(|monitor| match controller.read_input(&monitor.id) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::debug!(
+                    monitor_id = monitor.id.as_str(),
+                    error = %error,
+                    "display does not expose a controllable DDC/CI input"
+                );
+                false
+            }
+        })
+        .cloned()
+        .collect();
+    Ok(MonitorInventory {
+        detected,
+        controllable,
+    })
+}
+
+fn reconcile_monitor_selection(
+    settings: &mut AppSettings,
+    detected: &[MonitorDescriptor],
+    controllable: &[MonitorDescriptor],
+) -> Option<MonitorSelectionChange> {
+    if let Some(selected) = settings.shared_monitor.as_ref() {
+        if let Some(current) = controllable
+            .iter()
+            .find(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
+        {
+            let refreshed = SelectedMonitor::from(current);
+            if *selected != refreshed {
+                settings.shared_monitor = Some(refreshed);
+                return Some(MonitorSelectionChange::RefreshedMetadata);
+            }
+            return None;
+        }
+        if detected
+            .iter()
+            .any(|monitor| selected.fingerprint.matches_exactly(&monitor.fingerprint))
+        {
+            return None;
+        }
+    }
+
+    let mut auto_candidates = controllable.iter().filter(|monitor| !monitor.built_in);
+    let only = auto_candidates.next()?;
+    if auto_candidates.next().is_some() {
+        return None;
+    }
+    let replacement = SelectedMonitor::from(only);
+    let change = match settings.shared_monitor.replace(replacement) {
+        Some(previous) => MonitorSelectionChange::ReplacedMissingMonitor {
+            previous: previous.name,
+            replacement: only.name.clone(),
+        },
+        None => MonitorSelectionChange::SelectedOnlyMonitor {
+            name: only.name.clone(),
+        },
+    };
+    Some(change)
 }
 
 #[cfg(target_os = "windows")]
@@ -899,18 +1075,132 @@ fn settings_for_current_build(settings: AppSettings) -> AppSettings {
     settings
 }
 
+fn autostart_args() -> Option<Vec<&'static str>> {
+    #[cfg(target_os = "windows")]
+    {
+        Some(vec!["--autostart"])
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+fn launched_from_autostart(args: impl IntoIterator<Item = String>) -> bool {
+    args.into_iter().any(|arg| arg == "--autostart")
+}
+
+#[cfg(target_os = "windows")]
+fn hide_windows_main_window(window: &tauri::Window) {
+    if let Err(error) = window.set_skip_taskbar(true) {
+        tracing::warn!(error = %error, "unable to remove DisplayMux from the taskbar");
+    }
+    if let Err(error) = window.hide() {
+        tracing::warn!(error = %error, "unable to hide DisplayMux in the system tray");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_windows_main_webview(window: &tauri::WebviewWindow) {
+    if let Err(error) = window.set_skip_taskbar(true) {
+        tracing::warn!(error = %error, "unable to remove DisplayMux from the taskbar");
+    }
+    if let Err(error) = window.hide() {
+        tracing::warn!(error = %error, "unable to hide DisplayMux in the system tray");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_windows_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Err(error) = window.set_skip_taskbar(false) {
+        tracing::warn!(error = %error, "unable to restore DisplayMux to the taskbar");
+    }
+    if let Err(error) = window.show() {
+        tracing::warn!(error = %error, "unable to show DisplayMux from the system tray");
+    }
+    if let Err(error) = window.unminimize() {
+        tracing::warn!(error = %error, "unable to unminimize DisplayMux");
+    }
+    if let Err(error) = window.set_focus() {
+        tracing::warn!(error = %error, "unable to focus DisplayMux");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::{
+        menu::MenuBuilder,
+        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    };
+
+    let menu = MenuBuilder::new(app)
+        .text("tray-open", "開啟 DisplayMux")
+        .separator()
+        .text("tray-quit", "結束 DisplayMux")
+        .build()?;
+    let mut tray = TrayIconBuilder::with_id("displaymux")
+        .menu(&menu)
+        .tooltip("DisplayMux")
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray-open" => show_windows_main_window(app),
+            "tray-quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                show_windows_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 pub fn run() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_target(false)
         .compact()
         .try_init();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            None,
+            autostart_args(),
         ))
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(target_os = "windows")]
+    let builder = builder.on_window_event(|window, event| {
+        if window.label() != "main" {
+            return;
+        }
+        match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                hide_windows_main_window(window);
+            }
+            tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
+                hide_windows_main_window(window);
+            }
+            _ => {}
+        }
+    });
+    builder
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -922,6 +1212,12 @@ pub fn run() -> anyhow::Result<()> {
             if let Err(error) = app.autolaunch().disable() {
                 tracing::warn!(error = %error, "unable to remove development autostart entry");
             }
+            #[cfg(all(target_os = "windows", not(debug_assertions)))]
+            if settings.autostart {
+                if let Err(error) = app.autolaunch().enable() {
+                    tracing::warn!(error = %error, "unable to refresh the login autostart entry");
+                }
+            }
             let discovery = MdnsPeerDiscovery::start(local_host(), DEFAULT_AGENT_PORT)
                 .map(Some)
                 .unwrap_or_else(|error| {
@@ -929,11 +1225,20 @@ pub fn run() -> anyhow::Result<()> {
                     None
                 });
             app.manage(AppRuntime {
-                settings: RwLock::new(settings),
+                settings: Arc::new(RwLock::new(settings)),
                 settings_path,
                 agent_task: Mutex::new(None),
                 discovery,
             });
+            #[cfg(target_os = "windows")]
+            {
+                setup_windows_tray(app)?;
+                if launched_from_autostart(std::env::args()) {
+                    if let Some(window) = app.get_webview_window("main") {
+                        hide_windows_main_webview(&window);
+                    }
+                }
+            }
             let handle: AppHandle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Some(runtime) = handle.try_state::<AppRuntime>() {
@@ -965,7 +1270,51 @@ pub fn run() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
+
+    struct SelectionController {
+        monitors: Vec<MonitorDescriptor>,
+        controllable: HashSet<String>,
+    }
+
+    impl MonitorControl for SelectionController {
+        fn enumerate(&self) -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
+            Ok(self.monitors.clone())
+        }
+
+        fn read_input(
+            &self,
+            monitor: &displaymux_core::MonitorId,
+        ) -> Result<DisplayInput, DisplayMuxError> {
+            if self.controllable.contains(monitor.as_str()) {
+                DisplayInput::new(0x0f)
+            } else {
+                Err(DisplayMuxError::Backend("DDC/CI unavailable".to_owned()))
+            }
+        }
+
+        fn write_input(
+            &self,
+            _monitor: &displaymux_core::MonitorId,
+            _input: DisplayInput,
+        ) -> Result<(), DisplayMuxError> {
+            unreachable!("selection tests never write an input")
+        }
+    }
+
+    fn monitor(id: &str) -> MonitorDescriptor {
+        MonitorDescriptor {
+            id: displaymux_core::MonitorId::new(id),
+            name: id.to_owned(),
+            fingerprint: MonitorFingerprint::new("ACM", id, Some(format!("serial-{id}"))),
+            active: true,
+            built_in: false,
+            max_resolution: Some(displaymux_core::MonitorResolution::new(2560, 1440)),
+            resolution_source: Some(ResolutionSource::WindowsDisplayMode),
+        }
+    }
 
     #[test]
     fn shared_key_requires_at_least_eight_characters() {
@@ -990,6 +1339,38 @@ mod tests {
     }
 
     #[test]
+    fn only_the_explicit_login_argument_starts_windows_hidden() {
+        assert!(launched_from_autostart([
+            "DisplayMux.exe".to_owned(),
+            "--autostart".to_owned(),
+        ]));
+        assert!(!launched_from_autostart(["DisplayMux.exe".to_owned()]));
+    }
+
+    #[test]
+    fn direct_switch_bypasses_network_preflight_but_safe_switch_does_not() {
+        assert!(requires_network_preflight("peer", false));
+        assert!(!requires_network_preflight("peer", true));
+        assert!(!requires_network_preflight("local", false));
+    }
+
+    #[test]
+    fn v011_selected_monitor_without_resolution_source_still_loads() {
+        let value = serde_json::json!({
+            "name": "Existing monitor",
+            "fingerprint": {
+                "manufacturer_id": "ACM",
+                "product_code": "1234",
+                "serial_number": "serial"
+            },
+            "maxResolution": { "width": 3440, "height": 1440 }
+        });
+        let selected: SelectedMonitor = serde_json::from_value(value).unwrap();
+        assert_eq!(selected.resolution_source, None);
+        assert_eq!(selected.max_resolution.unwrap().width, 3440);
+    }
+
+    #[test]
     fn migration_preserves_the_previous_two_host_configuration() {
         let cases = [
             (DestinationHost::Windows, DestinationHost::Mac, 0x0f, 0x11),
@@ -1010,5 +1391,136 @@ mod tests {
             assert_eq!(migrated.peers[0].platform, peer_platform);
             assert_eq!(migrated.peers[0].input.unwrap().value(), peer_input);
         }
+    }
+
+    #[test]
+    fn selects_and_persists_the_only_controllable_monitor() {
+        let external = monitor("external");
+        let mut internal = monitor("internal");
+        internal.built_in = true;
+        let uncontrollable = monitor("uncontrollable");
+        let controller = SelectionController {
+            monitors: vec![internal, uncontrollable, external.clone()],
+            controllable: HashSet::from(["internal".to_owned(), external.id.as_str().to_owned()]),
+        };
+        let inventory = monitor_inventory(&controller).unwrap();
+        assert_eq!(inventory.detected.len(), 3);
+        assert_eq!(inventory.controllable.len(), 2);
+        let mut settings = AppSettings::default();
+
+        let change = reconcile_monitor_selection(
+            &mut settings,
+            &inventory.detected,
+            &inventory.controllable,
+        );
+
+        assert_eq!(
+            change,
+            Some(MonitorSelectionChange::SelectedOnlyMonitor {
+                name: "external".to_owned()
+            })
+        );
+        assert_eq!(
+            settings.shared_monitor,
+            Some(SelectedMonitor::from(&external))
+        );
+    }
+
+    #[test]
+    fn safely_replaces_a_missing_selection_when_only_one_candidate_remains() {
+        let previous = monitor("disconnected");
+        let replacement = monitor("replacement");
+        let mut settings = AppSettings {
+            shared_monitor: Some(SelectedMonitor::from(&previous)),
+            ..AppSettings::default()
+        };
+
+        let change = reconcile_monitor_selection(
+            &mut settings,
+            std::slice::from_ref(&replacement),
+            std::slice::from_ref(&replacement),
+        );
+
+        assert_eq!(
+            change,
+            Some(MonitorSelectionChange::ReplacedMissingMonitor {
+                previous: "disconnected".to_owned(),
+                replacement: "replacement".to_owned(),
+            })
+        );
+        assert_eq!(
+            settings.shared_monitor,
+            Some(SelectedMonitor::from(&replacement))
+        );
+    }
+
+    #[test]
+    fn never_guesses_between_multiple_controllable_monitors() {
+        let mut settings = AppSettings::default();
+        let monitors = [monitor("first"), monitor("second")];
+
+        assert_eq!(
+            reconcile_monitor_selection(&mut settings, &monitors, &monitors),
+            None
+        );
+        assert!(settings.shared_monitor.is_none());
+    }
+
+    #[test]
+    fn missing_selection_is_not_replaced_when_multiple_candidates_remain() {
+        let disconnected = monitor("disconnected");
+        let mut settings = AppSettings {
+            shared_monitor: Some(SelectedMonitor::from(&disconnected)),
+            ..AppSettings::default()
+        };
+        let monitors = [monitor("first"), monitor("second")];
+
+        assert_eq!(
+            reconcile_monitor_selection(&mut settings, &monitors, &monitors),
+            None
+        );
+        assert_eq!(
+            settings.shared_monitor,
+            Some(SelectedMonitor::from(&disconnected))
+        );
+    }
+
+    #[test]
+    fn direct_switch_result_always_warns_about_the_black_screen_risk() {
+        let target = monitor("external");
+        let input = DisplayInput::new(0x11).unwrap();
+        let result = outcome_result(
+            SwitchOutcome::AlreadySelected { target, input },
+            false,
+            true,
+        );
+
+        assert!(result.title.contains("直接切換"));
+        assert!(result.detail.contains("未確認目標主機"));
+        assert!(result.detail.contains("黑畫面"));
+    }
+
+    #[test]
+    fn transient_ddc_failure_does_not_replace_a_still_detected_selection() {
+        let selected = monitor("selected");
+        let replacement = monitor("replacement");
+        let mut settings = AppSettings {
+            shared_monitor: Some(SelectedMonitor::from(&selected)),
+            ..AppSettings::default()
+        };
+        let detected = [selected.clone(), replacement.clone()];
+
+        assert_eq!(
+            reconcile_monitor_selection(
+                &mut settings,
+                &detected,
+                std::slice::from_ref(&replacement),
+            ),
+            None
+        );
+        assert_eq!(
+            settings.shared_monitor,
+            Some(SelectedMonitor::from(&selected))
+        );
     }
 }

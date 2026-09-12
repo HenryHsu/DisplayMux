@@ -19,7 +19,7 @@ use wmi::WMIConnection;
 
 use crate::{
     DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint,
-    MonitorId, MonitorResolution,
+    MonitorId, MonitorResolution, ResolutionSource,
 };
 
 const INPUT_SOURCE_VCP_CODE: u8 = 0x60;
@@ -70,7 +70,11 @@ impl WindowsMonitorController {
                             decode_edid_text(&wmi_monitor.serial_number_id),
                         ),
                         active: wmi_monitor.active,
+                        built_in: wmi_monitor.built_in,
                         max_resolution: details.max_resolution,
+                        resolution_source: details
+                            .max_resolution
+                            .map(|_| ResolutionSource::WindowsDisplayMode),
                     },
                     handle: physical.hPhysicalMonitor,
                 });
@@ -163,6 +167,15 @@ struct WmiMonitorId {
     active: bool,
     serial_number_id: Vec<u16>,
     user_friendly_name: Vec<u16>,
+    #[serde(skip)]
+    built_in: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct WmiMonitorConnectionParams {
+    instance_name: String,
+    video_output_technology: u32,
 }
 
 fn query_wmi_monitors() -> Result<HashMap<String, WmiMonitorId>, DisplayMuxError> {
@@ -173,11 +186,34 @@ fn query_wmi_monitors() -> Result<HashMap<String, WmiMonitorId>, DisplayMuxError
             "SELECT InstanceName, Active, SerialNumberID, UserFriendlyName FROM WmiMonitorID",
         )
         .map_err(|error| backend_error("無法讀取 Windows 螢幕 EDID", error))?;
-
+    let connections: Vec<WmiMonitorConnectionParams> = connection
+        .raw_query("SELECT InstanceName, VideoOutputTechnology FROM WmiMonitorConnectionParams")
+        .map_err(|error| backend_error("無法判斷 Windows 內建螢幕", error))?;
+    let connection_types = connections
+        .into_iter()
+        .map(|params| {
+            (
+                normalize_wmi_instance(&params.instance_name),
+                params.video_output_technology,
+            )
+        })
+        .collect::<HashMap<_, _>>();
     Ok(monitors
         .into_iter()
-        .map(|monitor| (normalize_wmi_instance(&monitor.instance_name), monitor))
+        .map(|mut monitor| {
+            let key = normalize_wmi_instance(&monitor.instance_name);
+            monitor.built_in = connection_types
+                .get(&key)
+                .is_some_and(|technology| is_internal_output(*technology));
+            (key, monitor)
+        })
         .collect())
+}
+
+fn is_internal_output(technology: u32) -> bool {
+    // DISPLAYCONFIG_OUTPUT_TECHNOLOGY_LVDS, DISPLAYPORT_EMBEDDED,
+    // UDI_EMBEDDED, or INTERNAL.
+    matches!(technology, 6 | 11 | 13 | 0x8000_0000)
 }
 
 struct DeviceIdentity {
@@ -401,5 +437,15 @@ mod tests {
             normalize_wmi_instance(r"DISPLAY\AUS3554\5&5405411&0&UID4353_0"),
             r"DISPLAY\AUS3554\5&5405411&0&UID4353"
         );
+    }
+
+    #[test]
+    fn identifies_only_embedded_windows_output_technologies_as_internal() {
+        for technology in [6, 11, 13, 0x8000_0000] {
+            assert!(is_internal_output(technology));
+        }
+        for technology in [4, 5, 10, 12, 16] {
+            assert!(!is_internal_output(technology));
+        }
     }
 }
