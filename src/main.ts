@@ -1,10 +1,12 @@
 import "@fontsource-variable/manrope";
 import {
   Activity, ArrowLeftRight, CircleHelp, Computer, createIcons, Download, KeyRound, Laptop,
-  Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck,
-  Trash2, Zap,
+  ExternalLink, Github, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings,
+  ShieldCheck, Trash2, UserRound, Zap,
 } from "lucide";
+import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import packageMetadata from "../package.json";
 import "./styles.css";
 
 type Platform = "windows" | "mac";
@@ -240,6 +242,24 @@ app.innerHTML = `
             <article><span>03</span><div><h3>安全切換與直接切換</h3><p>安全切換會先確認或喚醒目標主機；直接切換只使用本機 DDC/CI，不需要網路，但對端離線時可能黑畫面。</p></div></article>
             <article><span>04</span><div><h3>MacBook 轉接器</h3><p>若 USB-C 或 HDMI 轉接器未轉送 DDC，可由另一台已配對、可控制螢幕的主機代為切換。</p></div></article>
           </div>
+
+          <section class="about-section" aria-labelledby="about-title">
+            <p class="section-kicker">ABOUT</p><h2 id="about-title">關於 DisplayMux</h2>
+            <dl class="about-grid">
+              <div class="about-item">
+                <dt><i data-lucide="user-round"></i>開發者</dt>
+                <dd>Henry Hsu</dd>
+              </div>
+              <div class="about-item">
+                <dt><i data-lucide="github"></i>GitHub</dt>
+                <dd><a href="https://github.com/HenryHsu/DisplayMux" target="_blank" rel="noopener noreferrer">HenryHsu/DisplayMux<i data-lucide="external-link"></i></a></dd>
+              </div>
+              <div class="about-item">
+                <dt><i data-lucide="activity"></i>工具版本</dt>
+                <dd id="app-version" aria-live="polite">讀取中</dd>
+              </div>
+            </dl>
+          </section>
         </div>
       </section>
     </main>
@@ -260,11 +280,11 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
-const iconSet = { Activity, ArrowLeftRight, CircleHelp, Computer, Download, KeyRound, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, Zap };
+const iconSet = { Activity, ArrowLeftRight, CircleHelp, Computer, Download, ExternalLink, Github, KeyRound, Laptop, Monitor, MoonStar, Network, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, Trash2, UserRound, Zap };
 const refreshIcons = () => createIcons({ icons: iconSet });
 refreshIcons();
 
-const pageTitles: Record<string, string> = { dashboard: "共用螢幕切換中心", settings: "螢幕與主機設定", help: "相容性與安全說明" };
+const pageTitles: Record<string, string> = { dashboard: "共用螢幕切換中心", settings: "螢幕與主機設定", help: "使用說明" };
 document.querySelectorAll<HTMLButtonElement>("[data-page]").forEach((button) => button.addEventListener("click", () => showPage(button.dataset.page ?? "dashboard")));
 document.querySelector<HTMLButtonElement>("#refresh-button")?.addEventListener("click", () => void refresh());
 document.querySelector<HTMLButtonElement>("#update-button")?.addEventListener("click", () => pendingUpdate ? showUpdateDialog(pendingUpdate) : void checkForUpdates(true));
@@ -740,8 +760,16 @@ function showToast(title: string, detail: string, warning = false): void {
 }
 
 async function bootstrap(): Promise<void> {
-  await refresh();
+  await Promise.all([refresh(), renderAppVersion()]);
   if (settings.checkUpdates && !isPreview) window.setTimeout(() => void checkForUpdates(false), 1800);
+}
+
+async function renderAppVersion(): Promise<void> {
+  try {
+    setText("#app-version", `v${await getVersion()}`);
+  } catch {
+    setText("#app-version", `v${packageMetadata.version}`);
+  }
 }
 
 void bootstrap();

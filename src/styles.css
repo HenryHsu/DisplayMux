@@ -1060,6 +1060,62 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   line-height: 1.6;
 }
 
+.about-section {
+  margin-top: 34px;
+  padding-top: 30px;
+  border-top: 1px solid var(--line);
+}
+
+.about-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 22px 0 0;
+}
+
+.about-item {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--accent-light);
+}
+
+.about-item dt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.about-item dt svg {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.about-item dd {
+  margin: 9px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.about-item a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.about-item a:hover { text-decoration: underline; }
+.about-item a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.about-item a svg { width: 13px; height: 13px; flex-shrink: 0; }
+
 /* Overlays & Dialogs */
 .operation-overlay {
   position: fixed;
