@@ -46,6 +46,16 @@ impl MonitorFingerprint {
                 _ => false,
             }
     }
+
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn stable_key(&self) -> String {
+        format!(
+            "{}:{}:{}",
+            self.manufacturer_id,
+            self.product_code,
+            self.serial_number.as_deref().unwrap_or("NO-SERIAL")
+        )
+    }
 }
 
 fn normalize_identifier(value: &str) -> String {
@@ -218,6 +228,20 @@ mod tests {
 
         let zero = MonitorResolution::new(1920, 0);
         assert!(!zero.is_ultrawide());
+    }
+
+    #[test]
+    fn monitor_stable_key_uses_vendor_product_and_serial() {
+        let first = MonitorFingerprint::new("aus", "3554", Some("278504"));
+        let same = MonitorFingerprint::new("AUS", "3554", Some("278504"));
+        let other_serial = MonitorFingerprint::new("AUS", "3554", Some("999999"));
+
+        assert_eq!(first.stable_key(), same.stable_key());
+        assert_ne!(first.stable_key(), other_serial.stable_key());
+        assert_eq!(
+            MonitorFingerprint::new("LEN", "65F4", None::<String>).stable_key(),
+            "LEN:65F4:NO-SERIAL"
+        );
     }
 }
 

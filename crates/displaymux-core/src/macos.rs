@@ -27,8 +27,7 @@ impl Default for MacOsMonitorController {
 
 impl MonitorControl for MacOsMonitorController {
     fn enumerate(&self) -> Result<Vec<MonitorDescriptor>, DisplayMuxError> {
-        Ok(Monitor::enumerate()
-            .map_err(backend_error)?
+        Ok(enumerate_external_online_monitors()?
             .into_iter()
             .map(|monitor| descriptor(&monitor))
             .collect())
@@ -55,18 +54,51 @@ impl MonitorControl for MacOsMonitorController {
 }
 
 fn find_monitor(monitor_id: &MonitorId) -> Result<Monitor, DisplayMuxError> {
-    Monitor::enumerate()
+    let matches = enumerate_external_online_monitors()?
+        .into_iter()
+        .filter(|monitor| id_for(&fingerprint(monitor, monitor.edid().as_deref())) == *monitor_id)
+        .collect::<Vec<_>>();
+
+    match matches.len() {
+        0 => Err(DisplayMuxError::MonitorNoLongerAvailable(
+            monitor_id.as_str().to_owned(),
+        )),
+        1 => Ok(matches.into_iter().next().expect("length checked")),
+        count => Err(DisplayMuxError::AmbiguousTarget { count }),
+    }
+}
+
+fn enumerate_external_online_monitors() -> Result<Vec<Monitor>, DisplayMuxError> {
+    Ok(Monitor::enumerate()
         .map_err(backend_error)?
         .into_iter()
-        .find(|monitor| id_for(monitor) == *monitor_id)
-        .ok_or_else(|| DisplayMuxError::MonitorNoLongerAvailable(monitor_id.as_str().to_owned()))
+        .filter(|monitor| {
+            let display = monitor.handle();
+            display.is_online() && !display.is_builtin()
+        })
+        .collect())
 }
 
 fn descriptor(monitor: &Monitor) -> MonitorDescriptor {
     let raw_edid = monitor.edid();
+    let fingerprint = fingerprint(monitor, raw_edid.as_deref());
+    let (max_resolution, resolution_source) =
+        edid::preferred_resolution(raw_edid.as_deref(), core_graphics_resolution(monitor));
+
+    MonitorDescriptor {
+        id: id_for(&fingerprint),
+        name: monitor.description(),
+        fingerprint,
+        active: true,
+        built_in: false,
+        max_resolution,
+        resolution_source,
+    }
+}
+
+fn fingerprint(monitor: &Monitor, raw_edid: Option<&[u8]>) -> MonitorFingerprint {
     let handle = monitor.handle();
-    let fingerprint = raw_edid
-        .as_deref()
+    raw_edid
         .and_then(|value| match fingerprint_from_edid(value) {
             Ok(fingerprint) => Some(fingerprint),
             Err(error) => {
@@ -84,23 +116,11 @@ fn descriptor(monitor: &Monitor) -> MonitorDescriptor {
                 handle.model_number(),
                 monitor.serial_number(),
             )
-        });
-    let (max_resolution, resolution_source) =
-        edid::preferred_resolution(raw_edid.as_deref(), core_graphics_resolution(monitor));
-
-    MonitorDescriptor {
-        id: id_for(monitor),
-        name: monitor.description(),
-        fingerprint,
-        active: true,
-        built_in: handle.is_builtin(),
-        max_resolution,
-        resolution_source,
-    }
+        })
 }
 
-fn id_for(monitor: &Monitor) -> MonitorId {
-    MonitorId::new(format!("macos:{}", monitor.handle().id))
+fn id_for(fingerprint: &MonitorFingerprint) -> MonitorId {
+    MonitorId::new(format!("macos:{}", fingerprint.stable_key()))
 }
 
 fn fingerprint_from_edid(edid: &[u8]) -> Result<MonitorFingerprint, DisplayMuxError> {
