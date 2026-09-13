@@ -1,3 +1,4 @@
+mod capabilities;
 mod domain;
 #[cfg(any(target_os = "macos", test))]
 mod edid;
@@ -17,8 +18,8 @@ pub use domain::{
 };
 pub use error::DisplayMuxError;
 pub use network::{
-    AgentAction, AgentClient, AgentRequest, AgentResponse, AgentServer, MacAddress,
-    MdnsPeerDiscovery, PeerEndpoint, WakeTarget, DEFAULT_AGENT_PORT,
+    AgentAction, AgentClient, AgentDisplayRoute, AgentRequest, AgentResponse, AgentServer,
+    MacAddress, MdnsPeerDiscovery, PeerEndpoint, WakeTarget, DEFAULT_AGENT_PORT,
 };
 pub use port::{MonitorControl, PeerDiscovery};
 pub use service::DisplayMuxService;

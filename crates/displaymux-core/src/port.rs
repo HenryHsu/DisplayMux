@@ -5,6 +5,8 @@ pub trait MonitorControl {
 
     fn read_input(&self, monitor: &MonitorId) -> Result<DisplayInput, DisplayMuxError>;
 
+    fn supported_inputs(&self, monitor: &MonitorId) -> Result<Vec<DisplayInput>, DisplayMuxError>;
+
     fn write_input(&self, monitor: &MonitorId, input: DisplayInput) -> Result<(), DisplayMuxError>;
 }
 

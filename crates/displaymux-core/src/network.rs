@@ -20,7 +20,10 @@ use tokio::{
     time::timeout,
 };
 
-use crate::{DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxError, PeerDiscovery};
+use crate::{
+    DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxError, MonitorFingerprint,
+    PeerDiscovery,
+};
 
 pub const DEFAULT_AGENT_PORT: u16 = 47_653;
 pub const DISPLAYMUX_SERVICE_TYPE: &str = "_displaymux._tcp.local.";
@@ -365,6 +368,14 @@ impl AgentRequest {
 pub struct AgentResponse {
     pub ready: bool,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_route: Option<AgentDisplayRoute>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentDisplayRoute {
+    pub monitor: MonitorFingerprint,
+    pub input: DisplayInput,
 }
 
 #[derive(Clone)]
@@ -528,6 +539,7 @@ fn rejection_response(error: &DisplayMuxError) -> AgentResponse {
     AgentResponse {
         ready: false,
         message: message.to_owned(),
+        display_route: None,
     }
 }
 
@@ -638,6 +650,14 @@ mod tests {
         assert!(matches!(error, DisplayMuxError::PeerUnavailable(_)));
         assert!(!error.to_string().contains("EOF"));
         assert!(error.to_string().contains("配對密碼"));
+    }
+
+    #[test]
+    fn older_agent_response_without_display_route_remains_compatible() {
+        let response: AgentResponse =
+            serde_json::from_str(r#"{"ready":true,"message":"ready"}"#).unwrap();
+        assert!(response.ready);
+        assert!(response.display_route.is_none());
     }
 
     #[tokio::test]

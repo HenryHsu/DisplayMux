@@ -2,8 +2,8 @@ use ddc::Ddc;
 use ddc_macos::Monitor;
 
 use crate::{
-    edid, DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor, MonitorFingerprint,
-    MonitorId, MonitorResolution,
+    capabilities, edid, DisplayInput, DisplayMuxError, MonitorControl, MonitorDescriptor,
+    MonitorFingerprint, MonitorId, MonitorResolution,
 };
 
 const INPUT_SELECT_VCP_CODE: u8 = 0x60;
@@ -39,6 +39,21 @@ impl MonitorControl for MacOsMonitorController {
             .get_vcp_feature(INPUT_SELECT_VCP_CODE)
             .map_err(backend_error)?;
         DisplayInput::new(u32::from(value.value()))
+    }
+
+    fn supported_inputs(
+        &self,
+        monitor_id: &MonitorId,
+    ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
+        let mut monitor = find_monitor(monitor_id)?;
+        let raw = monitor.capabilities_string().map_err(backend_error)?;
+        let inputs = capabilities::parse_input_sources(&raw);
+        if inputs.is_empty() {
+            return Err(DisplayMuxError::Backend(
+                "macOS 顯示器 capabilities 未宣告 VCP 0x60 輸入值".to_owned(),
+            ));
+        }
+        Ok(inputs)
     }
 
     fn write_input(

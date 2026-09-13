@@ -102,6 +102,13 @@ mod tests {
             })
         }
 
+        fn supported_inputs(
+            &self,
+            _monitor: &MonitorId,
+        ) -> Result<Vec<DisplayInput>, DisplayMuxError> {
+            Ok(vec![input(0x0f), input(0x11)])
+        }
+
         fn write_input(
             &self,
             monitor: &MonitorId,
