@@ -1,181 +1,247 @@
 # DisplayMux
 
-DisplayMux 是適用於 Windows 10/11 與 macOS 12+ 的 Tauri 2 桌面工具。它只控制使用者指定的「共用螢幕」，不會切換所有螢幕，也不會變更作業系統的多螢幕排列。
+繁體中文 | [English](README.en.md)
 
-可使用的螢幕品牌、型號、輸入埠與主機數量都不是寫死的。只要螢幕支援 DDC/CI，使用者即可從實際偵測結果選擇共用螢幕，並為每台 Windows 或 Mac 設定各自連接的輸入來源。
+DisplayMux 是一款適用於 Windows 10／11 與 macOS 12+ 的桌面工具，讓多台電腦共用同一台螢幕時，可以直接從電腦切換螢幕輸入，不必伸手操作螢幕按鍵。
 
-例如，一台 Windows 同時使用共用螢幕 A 與專用螢幕 B，而多台 Mac 或其他 Windows 也接在螢幕 A 上時，DisplayMux 只會切換螢幕 A；螢幕 B 會保持原狀。
+它只控制你選定的共用螢幕，不會改變作業系統的螢幕排列，也不會切換其他工作螢幕。
 
-## 核心原則
+## 適合的使用情境
 
-- 從可實際讀取 DDC/CI 輸入的偵測結果選擇唯一共用螢幕；只有一台時自動保存，多台時一律由使用者選擇。
-- 以完整 EDID 指紋辨識目標，未被選取的螢幕永遠不會收到切換指令。
-- 選取共用螢幕時以 VCP `0x60` 自動讀取並保存本機目前輸入，不要求使用者猜測。
-- 優先從 MCCS capabilities 取得螢幕宣告支援的輸入值；其他主機只會看到尚未分配的 Port。
-- Windows、Mac、本機與遠端都只是主機角色，不限制特定作業系統必須使用特定輸入埠。
-- 單一切換動作會自動處理 Wake-on-LAN、Agent 就緒確認與 DDC/CI 路徑，不要求使用者選擇切換模式。
+例如你有：
+- 一台同時連接兩台電腦的共用螢幕
+- 其他不需要切換的專用螢幕(非必要)
 
-## 一般使用者設定流程
+DisplayMux 只會切換指定的共用螢幕。其他螢幕會保持原本的畫面與排列。
+一台共用螢幕也可以加入多台 Windows 或 Mac；每台主機會保存各自使用的輸入 Port。
 
-1. 在需要參與切換的每台 Windows 或 Mac 安裝並啟動 DisplayMux。
-2. 在共用螢幕的 OSD 選單中開啟 DDC/CI。
-3. 在設定頁執行螢幕偵測；若只有一台可控制螢幕會自動選取，若有多台則從實際列出的品牌、型號與識別資訊中手動選擇。
-4. DisplayMux 會立即讀取 VCP `0x60`，將目前畫面所用的 Port 保存為本機輸入，並嘗試讀取螢幕的 MCCS capabilities。
-5. 在「附近的 DisplayMux 主機」依電腦名稱加入同一區網內的其他主機，輸入相同的配對密碼，並從過濾後的未分配 Port 清單為各主機指定輸入來源。
-6. 在所有參與切換的主機重複設定，並保持 Agent 在登入後自動啟動。
+## v0.1.3 重點更新
 
-IP、MAC 位址與 Agent Port 會透過 Bonjour／mDNS 自動探索並保存，通常不需要手動輸入。DHCP 位址改變時，再次搜尋即可更新主機資訊。配對密碼至少需要 8 個字元，而且所有要互相控制的主機必須使用相同密碼。
+- 選擇共用螢幕後，自動偵測並保存這台電腦目前使用的輸入 Port。
+- 自動讀取螢幕提供的輸入資訊，只列出受支援且尚未分配的 Port。
+- 加入另一台已設定好的 DisplayMux 主機時，若配對驗證成功且雙方使用同一台共用螢幕，會自動帶入對方的 Port。
+- 輸入選單改用容易理解的名稱：VGA、DVI、DP、HDMI 1、HDMI 2、Type-C。
+- 不再於一般操作介面顯示難以理解的 VCP 技術數值。
+- 輸入偵測只會讀取螢幕資訊，不會逐一切換 Port，因此不會為了偵測而造成黑畫面。
 
-本機 DDC/CI 切換不需要 Internet、mDNS、配對密碼或另一台主機在線。網路 Agent 用於區域網路上的就緒確認、Wake-on-LAN，以及本機 DDC/CI 失敗後的已驗證遠端代切；Agent 不可用時會自動退回本機 DDC/CI。Windows 版按關閉或最小化會留在系統匣繼續執行背景服務；只有系統匣的「結束 DisplayMux」會真正結束程序。
+## 實際操作畫面
 
-## 共用螢幕與輸入來源
+### 切換中心
 
-DisplayMux 使用 MCCS 的 VCP `0x60` 控制輸入來源，但介面不會要求使用者理解數值，而是直接顯示常見 Port 名稱：
+設定完成後，可以直接看到每台電腦對應的螢幕輸入，並從切換中心切換至目標主機。
 
-| 介面名稱 | Port 類型 |
-| --- | --- |
-| VGA | VGA |
-| DVI | DVI |
-| DP | DisplayPort |
-| HDMI 1／2 | HDMI |
-| Type-C | USB Type-C |
+![DisplayMux 切換中心，顯示本機使用 HDMI 1、Mac 使用 DP](assets/screenshots/switch-center.png)
 
-這些只是常見名稱，不是 DisplayMux 的固定硬體假設。不同螢幕可能使用其他值；capabilities 宣告的未知有效值會顯示為「其他輸入」，原始值仍會在程式內部保留供切換使用。USB-C 沒有跨廠商一致的 VCP 對照，因此無法確認為 Type-C 的廠商值不會被強行誤標。
+### 螢幕與主機設定
 
-選取共用螢幕時，DisplayMux 只執行不改變畫面的 DDC/CI 讀取：先讀取目前 VCP `0x60` 作為本機輸入，再解析 capabilities 中的 `vcp(60(...))` 清單。程式不會逐一切換 Port 探測，因此不會為了偵測製造黑畫面。若螢幕、HUB、Dock 或轉接路徑無法提供 capabilities，介面只會退回常見的 VGA、DVI、DP、HDMI 1、HDMI 2 與 Type-C，同時繼續排除已分配的 Port。
+DisplayMux 會自動判讀本機 Port；加入已設定好的主機後，也會在驗證成功時自動帶入對方的 Port。畫面中的名稱、位址與螢幕資訊皆為匿名展示資料。
 
-DDC/CI 能確認的是各台電腦目前正在顯示的本機輸入，以及螢幕自行宣告的支援值。加入另一台 DisplayMux 主機時，若配對密碼驗證成功，而且對方選取的完整 EDID 指紋與本機共用螢幕完全一致，DisplayMux 會直接採用對方已偵測的本機 Port；不同螢幕、未通過驗證、Port 已被占用或資料不完整時仍要求使用者手動選擇，不會猜測連接位置。
+![DisplayMux 螢幕與主機設定，自動顯示本機 HDMI 1 與已配對主機 DP](assets/screenshots/monitor-and-host-settings.png)
 
-更換螢幕、線材或連接埠後，應重新執行偵測並確認共用螢幕及每台主機的輸入來源。DisplayMux 不會用舊型號或「主螢幕」的概念自動替代無法辨識的目標。
 
-## 切換與喚醒流程
 
-1. 切換至遠端主機時，先向配對時保存的 MAC 與廣播位址送出 Wake-on-LAN；切換至本機時略過喚醒。
-2. 若配對與區域網路可用，確認目的主機的 DisplayMux Agent；必要時等待就緒，預設最多 45 秒。
-3. 目的主機就緒或網路路徑不可用時，都由目前主機優先透過本機 DDC/CI 切換到指定輸入。
-4. 只有本機 DDC/CI 失敗時，才嘗試請已配對且通過驗證的主機代為切換。
-5. 無法確認 Agent 時不再要求使用者選擇另一種模式，而是自動使用本機 DDC/CI，並提示對端未就緒時可能暫時黑畫面。
+## 使用前準備
 
-已配對主機睡眠時可能不會出現在即時搜尋結果，但 DisplayMux 仍會使用上次配對時保存的位址與 MAC 嘗試喚醒。完整關機後能否喚醒取決於硬體、韌體與作業系統，DisplayMux 無法保證。
+開始前請確認：
 
-## 平台與連接方式
+1. 共用螢幕支援 DDC/CI。
+2. 已在螢幕的 OSD 設定中開啟 DDC/CI。
+3. 每台要參與切換的電腦都已安裝並啟動 DisplayMux。
+4. 要互相配對的電腦位於同一個私人區域網路。
+5. 每台電腦都設定完全相同、至少 8 個字元的配對密碼。
 
-Windows 會透過系統 DDC/CI 介面列舉實際可控制的螢幕。macOS adapter 也會在執行時列舉實際提供 DDC 的顯示器，適用的連接方式包括：
+螢幕能正常顯示畫面，不一定代表目前使用的線材、轉接器或 Dock 也有轉送 DDC/CI。若偵測不到螢幕，請先參考下方的[連接與相容性限制](#連接與相容性限制)。
+
+## 快速設定
+
+### 1. 選擇共用螢幕
+
+開啟「螢幕與主機」設定頁並重新整理螢幕清單：
+
+- 只有一台可控制的外接螢幕時，DisplayMux 會自動選取。
+- 有多台可控制螢幕時，請手動選擇要共用的那一台。
+
+DisplayMux 會使用螢幕的製造商、型號與序號鎖定目標，不會依照**主螢幕**或螢幕排列順序猜測。
+
+### 2. 確認本機 Port
+
+選擇螢幕後，DisplayMux 會立即讀取目前輸入，並自動保存這台電腦使用的 Port。一般情況下不需要手動設定。
+
+介面會直接顯示 VGA、DVI、DP、HDMI 或 Type-C 等名稱，不需要查詢技術代碼。
+
+### 3. 設定配對密碼
+
+在所有電腦輸入完全相同的配對密碼。密碼至少需要 8 個字元，用來驗證區域網路內的控制要求，用於**喚醒電腦**。
+
+### 4. 加入其他主機
+
+在「附近的 DisplayMux 主機」中找到另一台電腦，然後按下「加入」。
+
+如果對方已完成共用螢幕設定，DisplayMux 會在下列條件全部成立時自動填入它使用的 Port：
+
+- 配對密碼驗證成功
+- 雙方選擇的螢幕識別資訊完全一致
+- 對方的 Port 是這台螢幕可使用的輸入
+- 該 Port 尚未分配給本機或其他主機
+- 雙方都使用 v0.1.3 或更新版本
+
+若無法安全確認，介面會保留手動選擇，不會猜測另一台電腦接在哪個 Port。
+
+### 5. 儲存並在其他電腦重複設定
+
+儲存設定後，在其他參與切換的電腦上完成相同步驟。建議開啟「登入後自動啟動」，讓其他主機可以搜尋、喚醒並要求這台電腦協助切換。
+
+## 日常使用
+
+設定完成後，在「切換中心」選擇目標主機即可。
+
+切換至遠端主機時，DisplayMux 會：
+
+1. 嘗試透過 Wake-on-LAN 喚醒目標主機。
+2. 確認目標主機的 DisplayMux Agent 是否就緒。
+3. 優先從目前這台電腦透過 DDC/CI 切換共用螢幕。
+4. 如果本機 DDC/CI 路徑失敗，再嘗試請已驗證的遠端主機代為切換。
+
+網路 Agent 暫時無法連線時，DisplayMux 仍會嘗試使用本機 DDC/CI。若目標電腦尚未輸出畫面，螢幕可能短暫顯示黑畫面。
+
+Windows 版關閉或最小化視窗後會留在系統匣執行。只有從系統匣選擇「結束 DisplayMux」才會真正關閉程式。
+
+## 輸入 Port 清單
+
+DisplayMux 優先使用螢幕自行提供的輸入清單，並排除已經分配的 Port。
+
+若螢幕、HUB、Dock 或轉接器無法提供清單，介面會改用精簡的常見選項：
+
+- VGA
+- DVI
+- DP
+- HDMI 1
+- HDMI 2
+- Type-C
+
+部分螢幕會使用廠商自訂的 Type-C 或其他輸入值。DisplayMux 會保留螢幕回報的原始值供內部切換，但無法確定名稱時只會顯示「其他輸入」，避免錯誤標示。
+
+更換螢幕、線材、Dock 或實際連接 Port 後，請重新選擇共用螢幕並檢查每台主機的設定。
+
+## 找不到螢幕或無法切換
+
+請依序確認：
+
+1. 螢幕 OSD 中的 DDC/CI 已開啟。
+2. 目前選擇的是外接共用螢幕，而不是筆電內建螢幕。
+3. 改用螢幕與電腦之間的直連線材測試。
+4. 暫時移除 KVM、轉接器或 Dock，確認問題是否位於中間設備。
+5. 重新整理 DisplayMux 的螢幕與主機清單。
+6. 確認兩台電腦使用相同配對密碼，且系統時間正確。
+7. 確認防火牆允許私人網路上的 mDNS 與 DisplayMux Agent。
+
+若直連可以控制、經過 Dock 後只能顯示畫面，通常表示 Dock 或驅動程式沒有轉送 DDC/CI；重新配對無法補回不存在的硬體通道。
+
+## 連接與相容性限制
+
+### Windows
+
+Windows 透過系統的 DDC/CI 介面列舉與控制實體螢幕。只有能實際讀取目前輸入的螢幕才會出現在可選清單。
+
+### macOS
+
+macOS 是否能使用 DDC/CI，取決於 Mac 型號、macOS 版本、連接埠、線材、轉接器與 Dock 是否完整轉送訊號。
+
+通常較有機會正常運作的連接方式包括：
 
 - Mac mini 內建 HDMI 直連
-- MacBook Air／Pro 的 USB-C 或 Thunderbolt 至 DisplayPort
-- MacBook Air／Pro 的 USB-C 或 Thunderbolt 轉 HDMI
+- Thunderbolt 至 DisplayPort 直連
+- Thunderbolt 轉 HDMI
 
-macOS 能否控制 DDC 仍取決於 Mac 晶片世代、macOS 版本、轉接器、擴充座與線材是否完整轉送 DDC。DisplayMux 會顯示實際偵測結果；連接路徑不可用時不會回報切換成功。
+以下裝置可能只能輸出畫面，卻不提供第三方程式可使用的 DDC/CI：
 
-### macOS 擴充座與 USB 顯示晶片限制
+- 部分 MST Dock
+- DisplayLink Dock
+- Silicon Motion InstantView／SM76x／SM77x 裝置
+- 未完整轉送 DDC 的 HDMI 或 USB-C 轉接器
 
-外接螢幕能正常顯示畫面或被 macOS 偵測，不代表該連接路徑也提供 DDC/CI。DisplayMux 必須能從 macOS 取得對應的 DDC／I²C service，才能讀寫 MCCS VCP `0x60`：
+DisplayLink 或 Dock 自己的軟體能調整亮度，不代表 DisplayMux 也能取得實體螢幕的控制通道。
 
-- 原生 USB-C DisplayPort Alt Mode 或 Thunderbolt 至 DisplayPort 的直連路徑最有機會完整提供 DDC/CI。
-- MST 擴充座不一定無法使用，但結果取決於晶片、韌體、連接拓撲及 macOS 能否正確辨識每台實體螢幕；應以 DisplayMux 實際讀取 VCP 的結果為準。
-- DisplayLink 透過驅動程式壓縮 framebuffer，再經 USB 傳送到擴充座晶片；一般 macOS DDC API 不一定能取得這條路徑的實體 I²C service。DisplayLink Manager 即使可透過自有功能調整亮度或對比，也不代表第三方程式可以送出輸入切換 VCP `0x60`。
-- Silicon Motion InstantView／SM76x／SM77x 也屬於 USB 虛擬顯示與壓縮傳輸。除非廠商驅動程式提供可用的 DDC API，DisplayMux 應視為影像可用但 DDC/CI 不可用。
+## Wake-on-LAN 與網路
 
-上述限制無法靠重試、重新配對或修正顯示器排列順序補回不存在的 DDC 通道。若直連可控制、經擴充座只能顯示畫面，通常代表限制位於擴充座或其驅動程式。此時可改用原生 Thunderbolt／DisplayPort／HDMI 連接，或由另一台具有可用 DDC/CI 路徑的已配對主機代為切換。
-
-建議的網路與電源設定：
-
-- Agent TCP Port 預設為 `47653`，參與配對的主機應保持一致。
-- 私人區域網路的防火牆需允許 `5353/UDP`（mDNS）與 `47653/TCP`（Agent）。
+- mDNS 使用 `5353/UDP` 搜尋同一區域網路內的 DisplayMux 主機。
+- DisplayMux Agent 預設使用 `47653/TCP`。
 - macOS 可開啟「Wake for network access」。
-- Windows 可在網卡與韌體設定中啟用 Wake-on-LAN。
-- 若電腦有多張實體或虛擬網卡，可在「進階網路資訊」確認自動取得的 MAC 是否屬於實際連網介面。
+- Windows 可在網卡與 BIOS／UEFI 中啟用 Wake-on-LAN。
+- 完整關機後能否喚醒取決於電腦硬體、韌體與作業系統設定，DisplayMux 無法保證。
+
+IP、MAC 位址與 Agent Port 會在搜尋主機時自動取得並保存。DHCP 位址改變後，再次搜尋即可更新資料。
 
 ## 安全與隱私
 
-DisplayMux 採 fail-closed 設計：只有剛好一台顯示器符合完整 EDID 指紋時才允許切換。找不到序號、沒有相符裝置或同時出現多台相符裝置時都會停止操作，不會退而控制作業系統主螢幕或全部螢幕。
+- DisplayMux 只會控制完整螢幕識別資訊相符的唯一目標。
+- 找不到目標、缺少必要識別資訊或同時出現多台相符螢幕時，操作會停止。
+- 已配對主機之間使用 HMAC-SHA256、時間限制與 nonce 重播防護驗證控制要求。
+- 配對密碼不會寫入一般操作日誌。
+- Wake-on-LAN 封包只用於喚醒，不會直接授權螢幕切換。
+- mDNS 只在區域網路廣播主機搜尋所需資訊。
+- 更新檢查不會傳送配對密碼、螢幕設定、電腦名稱、內網位址或螢幕識別資訊。
 
-已配對主機之間的控制要求使用 HMAC-SHA256 驗證、30 秒有效期限與 nonce 重播防護。正常操作不會把配對密碼輸出到應用程式日誌。Wake-on-LAN Magic Packet 本身沒有身分驗證，因此只用於喚醒，不直接授權螢幕切換。
+## 安裝與更新
 
-mDNS 搜尋只在區域網路內廣播服務資訊。自動更新檢查不會在請求內容中加入螢幕設定、電腦名稱、區網位址、配對密碼或 EDID 指紋；與一般 HTTPS 連線相同，GitHub 仍可取得來源 IP、User-Agent 等必要連線中繼資料。
+請從可信任的 DisplayMux GitHub Release 下載 Windows 安裝程式或 macOS Universal DMG。
+
+DisplayMux 可以檢查 GitHub Releases 是否有新版本，但不會在未確認的情況下自動下載或安裝。使用者選擇安裝後，程式會先驗證更新套件簽章。
+
+### macOS Gatekeeper
+
+目前 macOS DMG 使用 ad-hoc 簽章，尚未透過 Apple Developer ID 正式簽章與公證。第一次啟動時，Gatekeeper 可能要求手動允許：
+
+1. 將 `DisplayMux.app` 拖曳到 `/Applications`，並嘗試開啟一次。
+2. 開啟「系統設定」→「隱私權與安全性」。
+3. 在「安全性」區域找到 DisplayMux，按下「仍要打開」。
+4. 完成身分驗證後再次確認。
+
+只有在確認 App 來自本專案可信任的 Release 時才應允許執行。詳細說明可參考 Apple 的 [Open apps safely on your Mac](https://support.apple.com/102445)。
 
 ## 開發與建置
 
-需求：Rust 1.85+、Node.js 22+、pnpm 10+。macOS 建置另需 Xcode Command Line Tools。
-
-### 多國語言
-
-桌面介面目前提供英文（`en`）與繁體中文（`zh-TW`）。啟動時會依作業系統提供給 WebView 的語言偏好自動選擇；`zh-TW`、`zh-Hant`、`zh-HK` 與 `zh-MO` 使用繁體中文，其餘尚未支援的語言回退英文。前端字串集中在 `src/locales/`，共用語系偵測、fallback 與參數插值位於 `src/i18n.ts`。新增語言時應建立完整資源檔，不要在畫面元件中直接加入使用者可見字串。
+開發環境需求：Rust 1.85+、Node.js 22+、pnpm 10+。macOS 建置另需 Xcode Command Line Tools。
 
 ```powershell
 pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-只建置前端：
+執行完整驗證：
 
 ```powershell
 pnpm build
+cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-完整驗證：
+建立正式安裝包：
 
 ```powershell
-cargo check --all-targets
-cargo test --all-targets -- --nocapture
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+pnpm tauri build
 ```
 
-CLI 可用於診斷。請先用 `list` 取得實際顯示器識別資訊，再以 `--dry-run` 確認目標與輸入值：
+macOS 可使用專用腳本建立 ad-hoc 簽章的 Universal DMG：
+
+```bash
+./scripts/build-macos-dmg.sh
+```
+
+產物位於 `target/release/bundle/`。Windows 預設產生 NSIS 安裝程式；macOS 產生 `.app` 與 `.dmg`。
+
+### CLI 診斷
+
+CLI 適合開發者診斷螢幕識別與切換，不是一般使用者必要流程：
 
 ```powershell
 cargo run -p displaymux-cli -- list
 cargo run -p displaymux-cli -- switch <manufacturer> <product> <serial|-> <input> --dry-run
 ```
 
-只有確定要實際切換時才移除 `--dry-run`。
+確認目標正確後，才應移除 `--dry-run` 執行實際切換。
 
-正式建立安裝包：
+## 授權條款
 
-```powershell
-pnpm tauri build
-```
-
-Windows 預設產生 NSIS `setup.exe`，macOS 預設產生 `.app` 與 `.dmg`。Windows MSI 需要額外啟用 Windows 的 VBSCRIPT optional feature，因此不列入預設 bundle。
-
-macOS 可直接執行專用腳本；腳本會依 `pnpm-lock.yaml` 同步套件，明確套用
-`src-tauri/tauri.macos.conf.json` 產生 `.app`，建立可在未設定 Apple Developer
-憑證的本機上安裝測試之 ad-hoc 簽章，再封裝成 `.dmg`：
-
-```bash
-./scripts/build-macos-dmg.sh
-```
-
-也可透過 pnpm 執行相同腳本：
-
-```bash
-pnpm build:dmg
-```
-
-DMG 產物會位於 `target/release/bundle/dmg/`。
-
-### macOS Gatekeeper 與未公證測試版
-
-目前 macOS DMG 只有 ad-hoc 簽章，尚未使用 Apple Developer ID 正式簽章及 Apple notarization。從瀏覽器下載後，Gatekeeper 可能顯示「無法驗證開發者」或「Apple 無法檢查是否包含惡意軟體」，並阻擋第一次啟動。
-
-只有在確認 DMG 來自本專案可信任的 GitHub Release、且檔案未遭竄改時，才應允許執行。建議優先使用 macOS 圖形介面：
-
-1. 將 `DisplayMux.app` 拖曳到 `/Applications`，並嘗試開啟一次。
-2. 開啟「系統設定」→「隱私權與安全性」。
-3. 在「安全性」區域找到被阻擋的 DisplayMux，按下「仍要打開」。
-4. 完成身分驗證後，再次確認開啟。macOS 會只為這個 App 保存例外。
-
-若「仍要打開」沒有出現，而且已確認 App 來源可信，可在終端機只移除 DisplayMux 的 quarantine 屬性：
-
-```bash
-xattr -dr com.apple.quarantine /Applications/DisplayMux.app
-open /Applications/DisplayMux.app
-```
-
-這不是系統範圍的白名單，也不應對不明來源的 App 或整個 `/Applications` 執行。Apple 的官方操作與風險說明請參考 [Open apps safely on your Mac](https://support.apple.com/102445)。
-
-## 自動更新
-
-DisplayMux 啟動後可檢查公開的 GitHub Releases，但不會靜默下載或安裝。發現新版本時會顯示版本與 release notes，必須由使用者按下「下載並安裝」；Rust 後端會先驗證 Tauri updater 簽章，成功後才執行安裝與重新啟動。
+DisplayMux 採用 [MIT License](LICENSE)。
