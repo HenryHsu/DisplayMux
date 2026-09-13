@@ -1658,11 +1658,12 @@ fn hide_windows_main_webview(window: &tauri::WebviewWindow) {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn show_windows_main_window(app: &AppHandle) {
+fn show_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
+        tracing::warn!("unable to find the DisplayMux main window");
         return;
     };
+    #[cfg(target_os = "windows")]
     if let Err(error) = window.set_skip_taskbar(false) {
         tracing::warn!(error = %error, "unable to restore DisplayMux to the taskbar");
     }
@@ -1694,7 +1695,7 @@ fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
         .tooltip("DisplayMux")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "tray-open" => show_windows_main_window(app),
+            "tray-open" => show_main_window(app),
             "tray-quit" => app.exit(0),
             _ => {}
         })
@@ -1710,7 +1711,7 @@ fn setup_windows_tray(app: &tauri::App) -> tauri::Result<()> {
                     ..
                 }
             ) {
-                show_windows_main_window(tray.app_handle());
+                show_main_window(tray.app_handle());
             }
         });
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -1727,6 +1728,12 @@ pub fn run() -> anyhow::Result<()> {
         .compact()
         .try_init();
     let builder = tauri::Builder::default()
+        // This must remain the first plugin so a second launch exits before any
+        // other plugin or application setup can create duplicate resources.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tracing::info!("second DisplayMux launch redirected to the existing instance");
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             autostart_args(),
