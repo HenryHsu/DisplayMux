@@ -134,27 +134,43 @@ const releaseUrl = (version: string) => `https://github.com/HenryHsu/DisplayMux/
 const onboardingSteps = [
   {
     label: t("onboarding.stepWelcome"),
-    title: t("onboarding.welcomeTitle"),
-    body: t("onboarding.welcomeBody"),
-    points: [t("onboarding.welcomePointDisplay"), t("onboarding.welcomePointNetwork"), t("onboarding.welcomePointDdc")],
+    title: t("onboarding.dashboardTitle"),
+    body: t("onboarding.dashboardBody"),
+    page: "dashboard",
+    target: ".showcase-monitor-card",
+    placement: "right",
+  },
+  {
+    label: t("onboarding.stepSettings"),
+    title: t("onboarding.settingsTitle"),
+    body: t("onboarding.settingsBody"),
+    page: "dashboard",
+    target: '[data-page="settings"]',
+    placement: "right",
   },
   {
     label: t("onboarding.stepDisplay"),
     title: t("onboarding.displayTitle"),
     body: t("onboarding.displayBody"),
-    points: [t("onboarding.displayPointOne"), t("onboarding.displayPointInput"), t("onboarding.displayPointSafety")],
+    page: "settings",
+    target: ".form-section.first",
+    placement: "bottom",
   },
   {
     label: t("onboarding.stepPairing"),
     title: t("onboarding.pairingTitle"),
     body: t("onboarding.pairingBody"),
-    points: [t("onboarding.pairingPointPassword"), t("onboarding.pairingPointDiscover"), t("onboarding.pairingPointPort")],
+    page: "settings",
+    target: ".pairing-section",
+    placement: "top",
   },
   {
     label: t("onboarding.stepFinish"),
     title: t("onboarding.finishTitle"),
     body: t("onboarding.finishBody"),
-    points: [t("onboarding.finishPointSettings"), t("onboarding.finishPointSwitch"), t("onboarding.finishPointReplay")],
+    page: "settings",
+    target: ".form-actions",
+    placement: "top",
   },
 ] as const;
 
@@ -355,29 +371,21 @@ app.innerHTML = `
       <div class="update-actions"><button class="scan-button" id="update-cancel" type="button">${t("action.later")}</button><button class="save-button" id="update-install" type="button"><i data-lucide="download"></i>${t("action.downloadInstall")}</button></div>
     </div>
   </div>
-  <div class="onboarding-overlay" id="onboarding-overlay" aria-hidden="true">
-    <div class="onboarding-dialog" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" aria-describedby="onboarding-body">
-      <aside class="onboarding-rail">
-        <div class="onboarding-brand"><span class="onboarding-brand-mark"><i data-lucide="monitor"></i></span><strong>DisplayMux</strong></div>
-        <ol class="onboarding-step-list">
-          ${onboardingSteps.map((step, index) => `<li data-onboarding-step="${index}"><span>${String(index + 1).padStart(2, "0")}</span><strong>${step.label}</strong></li>`).join("")}
-        </ol>
-        <button class="onboarding-skip" id="onboarding-skip" type="button">${t("onboarding.skip")}</button>
-      </aside>
-      <section class="onboarding-content">
-        <p class="section-kicker">FIRST RUN SETUP</p>
-        <p class="onboarding-counter" id="onboarding-counter"></p>
-        <h2 id="onboarding-title"></h2>
-        <p class="onboarding-body" id="onboarding-body"></p>
-        <div class="onboarding-points" id="onboarding-points"></div>
-        <div class="onboarding-status" id="onboarding-status" hidden><strong id="onboarding-status-title"></strong><span id="onboarding-status-detail"></span></div>
-        <div class="onboarding-actions">
-          <button class="scan-button" id="onboarding-previous" type="button">${t("onboarding.previous")}</button>
-          <button class="save-button" id="onboarding-next" type="button"></button>
-        </div>
-      </section>
+  <div class="onboarding-overlay" id="onboarding-overlay" aria-hidden="true"></div>
+  <section class="onboarding-tooltip" id="onboarding-tooltip" role="dialog" aria-modal="false" aria-labelledby="onboarding-title" aria-describedby="onboarding-body" aria-hidden="true">
+    <div class="onboarding-tooltip-header">
+      <div><p class="section-kicker">PRODUCT TOUR</p><p class="onboarding-counter" id="onboarding-counter"></p></div>
+      <button class="onboarding-skip" id="onboarding-skip" type="button">${t("onboarding.skip")}</button>
     </div>
-  </div>
+    <span class="onboarding-step-label" id="onboarding-step-label"></span>
+    <h2 id="onboarding-title"></h2>
+    <p class="onboarding-body" id="onboarding-body"></p>
+    <div class="onboarding-status" id="onboarding-status" hidden><strong id="onboarding-status-title"></strong><span id="onboarding-status-detail"></span></div>
+    <div class="onboarding-actions">
+      <button class="scan-button" id="onboarding-previous" type="button">${t("onboarding.previous")}</button>
+      <button class="save-button" id="onboarding-next" type="button"></button>
+    </div>
+  </section>
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
@@ -400,6 +408,13 @@ document.querySelector<HTMLButtonElement>("#onboarding-next")?.addEventListener(
   else void completeOnboarding(true);
 });
 document.querySelector<HTMLButtonElement>("#onboarding-skip")?.addEventListener("click", () => void completeOnboarding(false));
+document.querySelector<HTMLButtonElement>('[data-page="settings"]')?.addEventListener("click", () => {
+  if (document.querySelector("#onboarding-overlay")?.classList.contains("is-visible") && onboardingStep === 1) {
+    showOnboarding(2);
+  }
+});
+window.addEventListener("resize", () => positionOnboardingTooltip());
+document.querySelector(".workspace")?.addEventListener("scroll", () => positionOnboardingTooltip());
 document.querySelector<HTMLButtonElement>("#scan-button")?.addEventListener("click", () => void scanPeers());
 const languageSelect = document.querySelector<HTMLSelectElement>("#language-select");
 if (languageSelect) {
@@ -846,29 +861,14 @@ function showUpdateDialog(update: UpdateInfo): void {
 }
 
 function showOnboarding(step: number): void {
+  clearOnboardingTarget();
   onboardingStep = Math.max(0, Math.min(step, onboardingSteps.length - 1));
   const current = onboardingSteps[onboardingStep];
+  showPage(current.page);
   setText("#onboarding-counter", t("onboarding.progress", { current: onboardingStep + 1, total: onboardingSteps.length }));
+  setText("#onboarding-step-label", current.label);
   setText("#onboarding-title", current.title);
   setText("#onboarding-body", current.body);
-
-  const points = document.querySelector("#onboarding-points");
-  points?.replaceChildren(...current.points.map((point, index) => {
-    const row = document.createElement("div");
-    const number = document.createElement("span");
-    const text = document.createElement("p");
-    number.textContent = String(index + 1).padStart(2, "0");
-    text.textContent = point;
-    row.append(number, text);
-    return row;
-  }));
-
-  document.querySelectorAll<HTMLElement>("[data-onboarding-step]").forEach((item, index) => {
-    item.classList.toggle("is-current", index === onboardingStep);
-    item.classList.toggle("is-complete", index < onboardingStep);
-    if (index === onboardingStep) item.setAttribute("aria-current", "step");
-    else item.removeAttribute("aria-current");
-  });
 
   const status = document.querySelector<HTMLElement>("#onboarding-status");
   const statusCopy = onboardingStatus(onboardingStep);
@@ -883,16 +883,30 @@ function showOnboarding(step: number): void {
 
   const previous = document.querySelector<HTMLButtonElement>("#onboarding-previous");
   if (previous) previous.hidden = onboardingStep === 0;
-  setText("#onboarding-next", onboardingStep === onboardingSteps.length - 1 ? t("onboarding.startSetup") : t("onboarding.next"));
+  setText("#onboarding-next", onboardingStep === onboardingSteps.length - 1 ? t("onboarding.finishTour") : t("onboarding.next"));
 
   const overlay = document.querySelector("#onboarding-overlay");
+  const tooltip = document.querySelector("#onboarding-tooltip");
   overlay?.classList.add("is-visible");
   overlay?.setAttribute("aria-hidden", "false");
-  window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>("#onboarding-next")?.focus());
+  tooltip?.classList.add("is-visible");
+  tooltip?.setAttribute("aria-hidden", "false");
+
+  const workspace = document.querySelector<HTMLElement>(".workspace");
+  if (onboardingStep <= 2) workspace?.scrollTo({ top: 0, behavior: "auto" });
+  window.requestAnimationFrame(() => {
+    const target = document.querySelector<HTMLElement>(current.target);
+    if (!target) return;
+    target.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
+    target.classList.add("onboarding-target");
+    target.setAttribute("aria-describedby", "onboarding-title onboarding-body");
+    positionOnboardingTooltip(target);
+    document.querySelector<HTMLButtonElement>("#onboarding-next")?.focus();
+  });
 }
 
 function onboardingStatus(step: number): { ready: boolean; title: string; detail: string } | null {
-  if (step === 1) {
+  if (step === 2) {
     if (settings.sharedMonitor) {
       return { ready: true, title: t("onboarding.displaySelected"), detail: settings.sharedMonitor.name };
     }
@@ -901,7 +915,7 @@ function onboardingStatus(step: number): { ready: boolean; title: string; detail
     }
     return { ready: false, title: t("onboarding.noDisplayDetected"), detail: t("onboarding.noDisplayDetectedDetail") };
   }
-  if (step === 2) {
+  if (step === 3) {
     const ready = settings.sharedKey.trim().length >= 8;
     return {
       ready,
@@ -912,14 +926,62 @@ function onboardingStatus(step: number): { ready: boolean; title: string; detail
   return null;
 }
 
+function clearOnboardingTarget(): void {
+  document.querySelectorAll<HTMLElement>(".onboarding-target").forEach((target) => {
+    target.classList.remove("onboarding-target");
+    target.removeAttribute("aria-describedby");
+  });
+}
+
+function positionOnboardingTooltip(explicitTarget?: HTMLElement): void {
+  const tooltip = document.querySelector<HTMLElement>("#onboarding-tooltip");
+  if (!tooltip?.classList.contains("is-visible")) return;
+  const target = explicitTarget ?? document.querySelector<HTMLElement>(".onboarding-target");
+  if (!target) return;
+
+  const targetRect = target.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const gap = 18;
+  const edge = 16;
+  const preferred = onboardingSteps[onboardingStep].placement;
+  const placements = [preferred, "right", "left", "bottom", "top"]
+    .filter((placement, index, all) => all.indexOf(placement) === index);
+
+  const coordinates = (placement: string): { left: number; top: number } => {
+    if (placement === "left") return { left: targetRect.left - tooltipRect.width - gap, top: targetRect.top + (targetRect.height - tooltipRect.height) / 2 };
+    if (placement === "bottom") return { left: targetRect.left + (targetRect.width - tooltipRect.width) / 2, top: targetRect.bottom + gap };
+    if (placement === "top") return { left: targetRect.left + (targetRect.width - tooltipRect.width) / 2, top: targetRect.top - tooltipRect.height - gap };
+    return { left: targetRect.right + gap, top: targetRect.top + (targetRect.height - tooltipRect.height) / 2 };
+  };
+
+  let placement = placements[0];
+  let position = coordinates(placement);
+  for (const candidate of placements) {
+    const next = coordinates(candidate);
+    if (next.left >= edge && next.top >= edge && next.left + tooltipRect.width <= window.innerWidth - edge && next.top + tooltipRect.height <= window.innerHeight - edge) {
+      placement = candidate;
+      position = next;
+      break;
+    }
+  }
+
+  tooltip.dataset.placement = placement;
+  tooltip.style.left = `${Math.min(Math.max(position.left, edge), window.innerWidth - tooltipRect.width - edge)}px`;
+  tooltip.style.top = `${Math.min(Math.max(position.top, edge), window.innerHeight - tooltipRect.height - edge)}px`;
+}
+
 async function completeOnboarding(openSettings: boolean): Promise<void> {
   try {
     settings = isPreview
       ? { ...settings, onboardingCompleted: true }
       : await invoke<AppSettings>("complete_onboarding");
     const overlay = document.querySelector("#onboarding-overlay");
+    const tooltip = document.querySelector("#onboarding-tooltip");
+    clearOnboardingTarget();
     overlay?.classList.remove("is-visible");
     overlay?.setAttribute("aria-hidden", "true");
+    tooltip?.classList.remove("is-visible");
+    tooltip?.setAttribute("aria-hidden", "true");
     if (openSettings) {
       showPage("settings");
       document.querySelector(".workspace")?.scrollTo({ top: 0, behavior: "smooth" });
