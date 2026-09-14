@@ -63,6 +63,7 @@ interface AppSettings {
   waitSeconds: number;
   autostart: boolean;
   checkUpdates: boolean;
+  onboardingCompleted: boolean;
 }
 
 interface DashboardState {
@@ -106,6 +107,7 @@ const standardInputs: InputOption[] = [
 const previewSettings: AppSettings = {
   localHost: "windows", sharedMonitor: null, localInput: null, supportedInputs: null, peers: [],
   broadcastIp: "255.255.255.255", wakePort: 9, sharedKey: "", waitSeconds: 45, autostart: true, checkUpdates: true,
+  onboardingCompleted: false,
 };
 const previewDashboard: DashboardState = {
   platform: "windows", localHost: "windows", agentConfigured: false, ddcAvailable: false,
@@ -128,6 +130,35 @@ const releaseHistory = [
 ] as const;
 
 const releaseUrl = (version: string) => `https://github.com/HenryHsu/DisplayMux/releases/tag/${version}`;
+
+const onboardingSteps = [
+  {
+    label: t("onboarding.stepWelcome"),
+    title: t("onboarding.welcomeTitle"),
+    body: t("onboarding.welcomeBody"),
+    points: [t("onboarding.welcomePointDisplay"), t("onboarding.welcomePointNetwork"), t("onboarding.welcomePointDdc")],
+  },
+  {
+    label: t("onboarding.stepDisplay"),
+    title: t("onboarding.displayTitle"),
+    body: t("onboarding.displayBody"),
+    points: [t("onboarding.displayPointOne"), t("onboarding.displayPointInput"), t("onboarding.displayPointSafety")],
+  },
+  {
+    label: t("onboarding.stepPairing"),
+    title: t("onboarding.pairingTitle"),
+    body: t("onboarding.pairingBody"),
+    points: [t("onboarding.pairingPointPassword"), t("onboarding.pairingPointDiscover"), t("onboarding.pairingPointPort")],
+  },
+  {
+    label: t("onboarding.stepFinish"),
+    title: t("onboarding.finishTitle"),
+    body: t("onboarding.finishBody"),
+    points: [t("onboarding.finishPointSettings"), t("onboarding.finishPointSwitch"), t("onboarding.finishPointReplay")],
+  },
+] as const;
+
+let onboardingStep = 0;
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error(t("app.rootMissing"));
@@ -282,6 +313,15 @@ app.innerHTML = `
             </div>
           </section>
 
+          <section class="onboarding-replay" aria-labelledby="onboarding-replay-title">
+            <div>
+              <p class="section-kicker">GETTING STARTED</p>
+              <h2 id="onboarding-replay-title">${t("help.onboardingTitle")}</h2>
+              <p>${t("help.onboardingBody")}</p>
+            </div>
+            <button class="scan-button" id="onboarding-restart" type="button">${t("help.onboardingAction")}</button>
+          </section>
+
           <section class="about-section" aria-labelledby="about-title">
             <p class="section-kicker">ABOUT</p><h2 id="about-title">${t("about.title")}</h2>
             <dl class="about-grid">
@@ -315,6 +355,29 @@ app.innerHTML = `
       <div class="update-actions"><button class="scan-button" id="update-cancel" type="button">${t("action.later")}</button><button class="save-button" id="update-install" type="button"><i data-lucide="download"></i>${t("action.downloadInstall")}</button></div>
     </div>
   </div>
+  <div class="onboarding-overlay" id="onboarding-overlay" aria-hidden="true">
+    <div class="onboarding-dialog" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" aria-describedby="onboarding-body">
+      <aside class="onboarding-rail">
+        <div class="onboarding-brand"><span class="onboarding-brand-mark"><i data-lucide="monitor"></i></span><strong>DisplayMux</strong></div>
+        <ol class="onboarding-step-list">
+          ${onboardingSteps.map((step, index) => `<li data-onboarding-step="${index}"><span>${String(index + 1).padStart(2, "0")}</span><strong>${step.label}</strong></li>`).join("")}
+        </ol>
+        <button class="onboarding-skip" id="onboarding-skip" type="button">${t("onboarding.skip")}</button>
+      </aside>
+      <section class="onboarding-content">
+        <p class="section-kicker">FIRST RUN SETUP</p>
+        <p class="onboarding-counter" id="onboarding-counter"></p>
+        <h2 id="onboarding-title"></h2>
+        <p class="onboarding-body" id="onboarding-body"></p>
+        <div class="onboarding-points" id="onboarding-points"></div>
+        <div class="onboarding-status" id="onboarding-status" hidden><strong id="onboarding-status-title"></strong><span id="onboarding-status-detail"></span></div>
+        <div class="onboarding-actions">
+          <button class="scan-button" id="onboarding-previous" type="button">${t("onboarding.previous")}</button>
+          <button class="save-button" id="onboarding-next" type="button"></button>
+        </div>
+      </section>
+    </div>
+  </div>
   <div class="toast" id="toast" role="status" aria-live="polite"><i data-lucide="zap"></i><div><strong id="toast-title"></strong><span id="toast-detail"></span></div></div>
 `;
 
@@ -328,6 +391,15 @@ document.querySelector<HTMLButtonElement>("#refresh-button")?.addEventListener("
 document.querySelector<HTMLButtonElement>("#update-button")?.addEventListener("click", () => pendingUpdate ? showUpdateDialog(pendingUpdate) : void checkForUpdates(true));
 document.querySelector<HTMLButtonElement>("#update-cancel")?.addEventListener("click", hideUpdateDialog);
 document.querySelector<HTMLButtonElement>("#update-install")?.addEventListener("click", () => void installUpdate());
+document.querySelector<HTMLButtonElement>("#onboarding-restart")?.addEventListener("click", () => showOnboarding(0));
+document.querySelector<HTMLButtonElement>("#onboarding-previous")?.addEventListener("click", () => {
+  if (onboardingStep > 0) showOnboarding(onboardingStep - 1);
+});
+document.querySelector<HTMLButtonElement>("#onboarding-next")?.addEventListener("click", () => {
+  if (onboardingStep < onboardingSteps.length - 1) showOnboarding(onboardingStep + 1);
+  else void completeOnboarding(true);
+});
+document.querySelector<HTMLButtonElement>("#onboarding-skip")?.addEventListener("click", () => void completeOnboarding(false));
 document.querySelector<HTMLButtonElement>("#scan-button")?.addEventListener("click", () => void scanPeers());
 const languageSelect = document.querySelector<HTMLSelectElement>("#language-select");
 if (languageSelect) {
@@ -773,6 +845,91 @@ function showUpdateDialog(update: UpdateInfo): void {
   overlay?.setAttribute("aria-hidden", "false");
 }
 
+function showOnboarding(step: number): void {
+  onboardingStep = Math.max(0, Math.min(step, onboardingSteps.length - 1));
+  const current = onboardingSteps[onboardingStep];
+  setText("#onboarding-counter", t("onboarding.progress", { current: onboardingStep + 1, total: onboardingSteps.length }));
+  setText("#onboarding-title", current.title);
+  setText("#onboarding-body", current.body);
+
+  const points = document.querySelector("#onboarding-points");
+  points?.replaceChildren(...current.points.map((point, index) => {
+    const row = document.createElement("div");
+    const number = document.createElement("span");
+    const text = document.createElement("p");
+    number.textContent = String(index + 1).padStart(2, "0");
+    text.textContent = point;
+    row.append(number, text);
+    return row;
+  }));
+
+  document.querySelectorAll<HTMLElement>("[data-onboarding-step]").forEach((item, index) => {
+    item.classList.toggle("is-current", index === onboardingStep);
+    item.classList.toggle("is-complete", index < onboardingStep);
+    if (index === onboardingStep) item.setAttribute("aria-current", "step");
+    else item.removeAttribute("aria-current");
+  });
+
+  const status = document.querySelector<HTMLElement>("#onboarding-status");
+  const statusCopy = onboardingStatus(onboardingStep);
+  if (status) {
+    status.hidden = statusCopy == null;
+    status.classList.toggle("is-ready", statusCopy?.ready ?? false);
+  }
+  if (statusCopy) {
+    setText("#onboarding-status-title", statusCopy.title);
+    setText("#onboarding-status-detail", statusCopy.detail);
+  }
+
+  const previous = document.querySelector<HTMLButtonElement>("#onboarding-previous");
+  if (previous) previous.hidden = onboardingStep === 0;
+  setText("#onboarding-next", onboardingStep === onboardingSteps.length - 1 ? t("onboarding.startSetup") : t("onboarding.next"));
+
+  const overlay = document.querySelector("#onboarding-overlay");
+  overlay?.classList.add("is-visible");
+  overlay?.setAttribute("aria-hidden", "false");
+  window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>("#onboarding-next")?.focus());
+}
+
+function onboardingStatus(step: number): { ready: boolean; title: string; detail: string } | null {
+  if (step === 1) {
+    if (settings.sharedMonitor) {
+      return { ready: true, title: t("onboarding.displaySelected"), detail: settings.sharedMonitor.name };
+    }
+    if (dashboard.monitors.length > 0) {
+      return { ready: true, title: t("onboarding.displaysDetected", { count: dashboard.monitors.length }), detail: t("onboarding.displaysDetectedDetail") };
+    }
+    return { ready: false, title: t("onboarding.noDisplayDetected"), detail: t("onboarding.noDisplayDetectedDetail") };
+  }
+  if (step === 2) {
+    const ready = settings.sharedKey.trim().length >= 8;
+    return {
+      ready,
+      title: ready ? t("onboarding.pairingReady") : t("onboarding.pairingNotReady"),
+      detail: ready ? t("onboarding.pairingReadyDetail") : t("onboarding.pairingNotReadyDetail"),
+    };
+  }
+  return null;
+}
+
+async function completeOnboarding(openSettings: boolean): Promise<void> {
+  try {
+    settings = isPreview
+      ? { ...settings, onboardingCompleted: true }
+      : await invoke<AppSettings>("complete_onboarding");
+    const overlay = document.querySelector("#onboarding-overlay");
+    overlay?.classList.remove("is-visible");
+    overlay?.setAttribute("aria-hidden", "true");
+    if (openSettings) {
+      showPage("settings");
+      document.querySelector(".workspace")?.scrollTo({ top: 0, behavior: "smooth" });
+      window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>("[data-monitor-id]:not(:disabled)")?.focus());
+    }
+  } catch (error) {
+    showToast(t("toast.onboardingFailed"), String(error), true);
+  }
+}
+
 function appendInlineMarkdown(parent: HTMLElement, source: string): void {
   const pattern = /(\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*)/g;
   let cursor = 0;
@@ -949,6 +1106,7 @@ async function bootstrap(): Promise<void> {
     try { await invoke("set_locale", { locale }); } catch { /* Preview mode has no Tauri backend. */ }
   }
   await Promise.all([refresh(), renderAppVersion()]);
+  if (!settings.onboardingCompleted) showOnboarding(0);
   if (settings.checkUpdates && !isPreview) window.setTimeout(() => void checkForUpdates(false), 1800);
 }
 

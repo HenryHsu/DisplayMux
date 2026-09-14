@@ -161,6 +161,7 @@ struct AppSettings {
     wait_seconds: u64,
     autostart: bool,
     check_updates: bool,
+    onboarding_completed: bool,
 }
 
 impl Default for AppSettings {
@@ -177,6 +178,7 @@ impl Default for AppSettings {
             wait_seconds: 45,
             autostart: true,
             check_updates: true,
+            onboarding_completed: false,
         }
     }
 }
@@ -437,6 +439,13 @@ fn get_settings(state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
+fn complete_onboarding(state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
+    let mut settings = read_settings(&state)?;
+    settings.onboarding_completed = true;
+    store_settings(&state, settings)
+}
+
+#[tauri::command]
 fn get_input_options(state: State<'_, AppRuntime>) -> Result<Vec<InputOption>, String> {
     let settings = read_settings(&state)?;
     let inputs = settings
@@ -466,6 +475,7 @@ async fn save_settings(
     settings.shared_monitor = protected.shared_monitor;
     settings.local_input = protected.local_input;
     settings.supported_inputs = protected.supported_inputs;
+    settings.onboarding_completed = protected.onboarding_completed;
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
     store_settings(&state, settings)?;
@@ -1330,8 +1340,17 @@ fn load_settings(path: &Path) -> AppSettings {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
         return AppSettings::default();
     };
+    settings_from_value(value)
+}
+
+fn settings_from_value(value: serde_json::Value) -> AppSettings {
     if value.get("sharedMonitor").is_some() || value.get("peers").is_some() {
-        serde_json::from_value(value).unwrap_or_default()
+        let is_existing_install = value.get("onboardingCompleted").is_none();
+        let mut settings = serde_json::from_value::<AppSettings>(value).unwrap_or_default();
+        if is_existing_install {
+            settings.onboarding_completed = true;
+        }
+        settings
     } else {
         serde_json::from_value::<LegacySettings>(value)
             .map(migrate_legacy_settings)
@@ -1379,6 +1398,7 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         wait_seconds: legacy.wait_seconds,
         autostart: legacy.autostart,
         check_updates: legacy.check_updates,
+        onboarding_completed: true,
     }
 }
 
@@ -1811,6 +1831,7 @@ pub fn run() -> anyhow::Result<()> {
             remove_peer,
             select_monitor,
             get_settings,
+            complete_onboarding,
             get_input_options,
             save_settings,
             check_for_update,
@@ -1903,6 +1924,17 @@ mod tests {
         assert!(settings.local_input.is_none());
         assert!(settings.peers.is_empty());
         assert!(settings.check_updates);
+        assert!(!settings.onboarding_completed);
+    }
+
+    #[test]
+    fn existing_install_without_onboarding_marker_does_not_show_first_run_flow() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("onboardingCompleted");
+
+        let settings = settings_from_value(value);
+
+        assert!(settings.onboarding_completed);
     }
 
     #[test]
@@ -1965,6 +1997,7 @@ mod tests {
             };
             let migrated = migrate_legacy_settings(legacy);
             assert!(migrated.shared_monitor.is_none());
+            assert!(migrated.onboarding_completed);
             assert_eq!(migrated.local_input.unwrap().value(), local_input);
             assert_eq!(migrated.peers[0].platform, peer_platform);
             assert_eq!(migrated.peers[0].input.unwrap().value(), peer_input);
