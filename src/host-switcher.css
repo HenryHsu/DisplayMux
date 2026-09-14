@@ -1,0 +1,44 @@
+:root {
+  font-family: "Manrope Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #17211e;
+  background: transparent;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 0; min-height: 0; overflow: hidden; background: #e8ece9; }
+button { font: inherit; color: inherit; }
+
+.switcher-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  padding: 28px;
+  background: #f9fbfa;
+  border: 1px solid #cfd8d3;
+  box-shadow: inset 0 4px 0 #137356;
+}
+
+.switcher-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 20px; border-bottom: 1px solid #dce3df; }
+.eyebrow { margin: 0 0 5px; color: #137356; font-size: 11px; font-weight: 800; letter-spacing: 0.16em; }
+h1 { margin: 0; font-size: 25px; line-height: 1.2; letter-spacing: -0.035em; }
+.switcher-header p:last-child { margin: 7px 0 0; color: #64716c; font-size: 13px; }
+.host-list { display: grid; gap: 10px; padding: 20px 0; overflow: auto; }
+.host-option { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 14px; width: 100%; min-height: 76px; padding: 13px 15px; border: 1px solid #d7dedb; border-radius: 10px; background: #fff; text-align: left; cursor: pointer; transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease; }
+.host-option:hover:not(:disabled), .host-option.is-selected { border-color: #137356; box-shadow: 0 0 0 3px rgba(19, 115, 86, 0.11); transform: translateY(-1px); }
+.host-option:focus { outline: none; }
+.host-option:disabled { cursor: not-allowed; opacity: 0.55; }
+.platform-mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 9px; background: #eaf5f0; color: #137356; font-size: 15px; font-weight: 850; }
+.platform-mark.mac { background: #edf0f4; color: #34404d; }
+.host-copy { display: flex; flex-direction: column; min-width: 0; }
+.host-copy strong { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.host-copy small { margin-top: 4px; color: #68746f; font-size: 12px; }
+.host-status { color: #137356; font-size: 12px; font-weight: 750; }
+.empty-state { margin: 20px 0; color: #68746f; text-align: center; }
+
+.switch-message { display: flex; flex-direction: column; gap: 2px; margin: -8px 0 14px; padding: 10px 12px; border-left: 3px solid #137356; background: #eaf5f0; font-size: 12px; }
+.switch-message.is-error { border-color: #a54735; background: #fbefec; }
+.switch-message span { color: #56645e; }
+footer { display: flex; justify-content: space-between; margin-top: auto; padding-top: 15px; border-top: 1px solid #dce3df; color: #68746f; font-size: 11px; font-weight: 650; }

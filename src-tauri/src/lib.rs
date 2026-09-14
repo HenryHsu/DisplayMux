@@ -20,12 +20,14 @@ use displaymux_core::{
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Manager, State};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_updater::UpdaterExt;
 use tokio::{sync::Mutex, time::sleep};
 
 static NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static UI_LOCALE: AtomicU64 = AtomicU64::new(0);
 const MIN_SHARED_KEY_LENGTH: usize = 8;
+const DEFAULT_HOST_SWITCHER_SHORTCUT: &str = "CommandOrControl+Alt+Space";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UiLocale {
@@ -162,6 +164,8 @@ struct AppSettings {
     autostart: bool,
     check_updates: bool,
     onboarding_completed: bool,
+    host_switcher_enabled: bool,
+    host_switcher_shortcut: String,
 }
 
 impl Default for AppSettings {
@@ -179,8 +183,35 @@ impl Default for AppSettings {
             autostart: true,
             check_updates: true,
             onboarding_completed: false,
+            host_switcher_enabled: false,
+            host_switcher_shortcut: DEFAULT_HOST_SWITCHER_SHORTCUT.to_owned(),
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSwitcherOption {
+    id: String,
+    name: String,
+    platform: DestinationHost,
+    input_name: Option<String>,
+    is_local: bool,
+    available: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSwitcherState {
+    shared_monitor_name: Option<String>,
+    hosts: Vec<HostSwitcherOption>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShortcutCheckResult {
+    available: bool,
+    message: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -439,6 +470,91 @@ fn get_settings(state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
+fn get_host_switcher_state(state: State<'_, AppRuntime>) -> Result<HostSwitcherState, String> {
+    let settings = read_settings(&state)?;
+    let mut hosts = Vec::with_capacity(settings.peers.len() + 1);
+    hosts.push(HostSwitcherOption {
+        id: "local".to_owned(),
+        name: ui_text("這台電腦", "This computer").to_owned(),
+        platform: settings.local_host,
+        input_name: settings.local_input.map(localized_input_name),
+        is_local: true,
+        available: settings.local_input.is_some(),
+    });
+    hosts.extend(settings.peers.iter().map(|peer| HostSwitcherOption {
+        id: peer.id.clone(),
+        name: peer.name.clone(),
+        platform: peer.platform,
+        input_name: peer.input.map(localized_input_name),
+        is_local: false,
+        available: peer.input.is_some(),
+    }));
+    Ok(HostSwitcherState {
+        shared_monitor_name: settings.shared_monitor.map(|monitor| monitor.name),
+        hosts,
+    })
+}
+
+#[tauri::command]
+fn hide_host_switcher(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("host-switcher") {
+        window.hide().map_err(user_error)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn check_host_switcher_shortcut(
+    shortcut: String,
+    state: State<'_, AppRuntime>,
+    app: AppHandle,
+) -> Result<ShortcutCheckResult, String> {
+    let candidate = validate_host_switcher_shortcut(&shortcut).map_err(core_user_error)?;
+    let settings = read_settings(&state)?;
+    let current = settings
+        .host_switcher_enabled
+        .then(|| Shortcut::from_str(&settings.host_switcher_shortcut).ok())
+        .flatten();
+    if current.is_some_and(|registered| {
+        registered.id() == candidate.id() && app.global_shortcut().is_registered(registered)
+    }) {
+        return Ok(ShortcutCheckResult {
+            available: true,
+            message: ui_text("快捷鍵可使用", "Shortcut is available").to_owned(),
+        });
+    }
+    if app.global_shortcut().is_registered(candidate) {
+        return Ok(ShortcutCheckResult {
+            available: false,
+            message: ui_text(
+                "此快捷鍵已由 DisplayMux 的其他功能使用",
+                "This shortcut is already used by another DisplayMux feature.",
+            )
+            .to_owned(),
+        });
+    }
+    match app.global_shortcut().register(candidate) {
+        Ok(()) => {
+            app.global_shortcut()
+                .unregister(candidate)
+                .map_err(user_error)?;
+            Ok(ShortcutCheckResult {
+                available: true,
+                message: ui_text("快捷鍵可使用", "Shortcut is available").to_owned(),
+            })
+        }
+        Err(_) => Ok(ShortcutCheckResult {
+            available: false,
+            message: ui_text(
+                "快捷鍵發生衝突，可能已被其他程式使用",
+                "Shortcut conflict detected. Another application may already be using it.",
+            )
+            .to_owned(),
+        }),
+    }
+}
+
+#[tauri::command]
 fn complete_onboarding(state: State<'_, AppRuntime>) -> Result<AppSettings, String> {
     let mut settings = read_settings(&state)?;
     settings.onboarding_completed = true;
@@ -472,13 +588,19 @@ async fn save_settings(
     // Monitor identity and discovered input data are backend-owned. The webview may only
     // assign a filtered input to remote hosts; it cannot forge DDC discovery results.
     settings.local_host = protected.local_host;
-    settings.shared_monitor = protected.shared_monitor;
+    settings.shared_monitor = protected.shared_monitor.clone();
     settings.local_input = protected.local_input;
-    settings.supported_inputs = protected.supported_inputs;
+    settings.supported_inputs = protected.supported_inputs.clone();
     settings.onboarding_completed = protected.onboarding_completed;
     validate_settings(&settings).map_err(core_user_error)?;
     let enable_autostart = settings.autostart;
-    store_settings(&state, settings)?;
+    update_host_switcher_shortcut(&app, &protected, &settings)?;
+    if let Err(error) = store_settings(&state, settings.clone()) {
+        if let Err(rollback_error) = update_host_switcher_shortcut(&app, &settings, &protected) {
+            tracing::warn!(error = %rollback_error, "unable to restore the previous host switcher shortcut");
+        }
+        return Err(error);
+    }
     let autostart = app.autolaunch();
     let autostart_enabled = autostart.is_enabled().map_err(user_error)?;
     if enable_autostart != autostart_enabled {
@@ -1059,6 +1181,9 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
             .to_owned(),
         ));
     }
+    if settings.host_switcher_enabled {
+        validate_host_switcher_shortcut(&settings.host_switcher_shortcut)?;
+    }
     if settings
         .local_input
         .is_some_and(|input| DisplayInput::new(input.value()).is_err())
@@ -1131,6 +1256,156 @@ fn validate_settings(settings: &AppSettings) -> Result<(), DisplayMuxError> {
         }));
     }
     Ok(())
+}
+
+fn validate_host_switcher_shortcut(value: &str) -> Result<Shortcut, DisplayMuxError> {
+    let shortcut = Shortcut::from_str(value).map_err(|_| {
+        DisplayMuxError::Backend(
+            ui_text(
+                "無法辨識快捷鍵，請同時按下修飾鍵與一個一般按鍵",
+                "The shortcut was not recognized. Press a modifier and one regular key.",
+            )
+            .to_owned(),
+        )
+    })?;
+    let required_modifier = platform_primary_shortcut_modifier();
+    if !shortcut.mods.intersects(required_modifier) {
+        return Err(DisplayMuxError::Backend(
+            ui_text(
+                "Windows 快捷鍵必須包含 Ctrl；macOS 快捷鍵必須包含 Command",
+                "The shortcut must include Ctrl on Windows or Command on macOS.",
+            )
+            .to_owned(),
+        ));
+    }
+    if shortcut.mods.bits().count_ones() > 2 {
+        return Err(DisplayMuxError::Backend(
+            ui_text(
+                "Ctrl 或 Command 之外最多只能再搭配一個修飾鍵",
+                "Use at most one additional modifier with Ctrl or Command.",
+            )
+            .to_owned(),
+        ));
+    }
+    if is_common_application_shortcut(&shortcut) {
+        return Err(DisplayMuxError::Backend(
+            ui_text(
+                "這是瀏覽器或常用應用程式的快捷鍵，請改用其他組合",
+                "This shortcut is commonly used by browsers or other applications. Choose another combination.",
+            )
+            .to_owned(),
+        ));
+    }
+    Ok(shortcut)
+}
+
+fn platform_primary_shortcut_modifier() -> Modifiers {
+    #[cfg(target_os = "macos")]
+    {
+        Modifiers::SUPER
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Modifiers::CONTROL
+    }
+}
+
+fn is_common_application_shortcut(shortcut: &Shortcut) -> bool {
+    let primary = platform_primary_shortcut_modifier();
+    let primary_only = shortcut.mods == primary;
+    let primary_with_shift = shortcut.mods == (primary | Modifiers::SHIFT);
+    (primary_only
+        && matches!(
+            shortcut.key,
+            Code::KeyA
+                | Code::KeyC
+                | Code::KeyF
+                | Code::KeyH
+                | Code::KeyL
+                | Code::KeyM
+                | Code::KeyN
+                | Code::KeyO
+                | Code::KeyP
+                | Code::KeyQ
+                | Code::KeyR
+                | Code::KeyS
+                | Code::KeyT
+                | Code::KeyV
+                | Code::KeyW
+                | Code::KeyX
+                | Code::KeyY
+                | Code::KeyZ
+                | Code::Tab
+                | Code::F4
+        ))
+        || (primary_with_shift
+            && matches!(
+                shortcut.key,
+                Code::KeyN | Code::KeyP | Code::KeyR | Code::KeyS | Code::KeyT | Code::KeyW
+            ))
+}
+
+fn update_host_switcher_shortcut(
+    app: &AppHandle,
+    previous: &AppSettings,
+    next: &AppSettings,
+) -> Result<(), String> {
+    if previous.host_switcher_enabled == next.host_switcher_enabled
+        && previous.host_switcher_shortcut == next.host_switcher_shortcut
+    {
+        return Ok(());
+    }
+    let next_shortcut = next
+        .host_switcher_enabled
+        .then(|| validate_host_switcher_shortcut(&next.host_switcher_shortcut))
+        .transpose()
+        .map_err(core_user_error)?;
+    let previous_shortcut = previous
+        .host_switcher_enabled
+        .then(|| Shortcut::from_str(&previous.host_switcher_shortcut).ok())
+        .flatten();
+    let previous_was_registered =
+        previous_shortcut.is_some_and(|shortcut| app.global_shortcut().is_registered(shortcut));
+    if let Some(shortcut) = previous_shortcut.filter(|_| previous_was_registered) {
+        app.global_shortcut()
+            .unregister(shortcut)
+            .map_err(user_error)?;
+    }
+    if let Some(shortcut) = next_shortcut {
+        if let Err(error) = app.global_shortcut().register(shortcut) {
+            if let Some(previous_shortcut) = previous_shortcut.filter(|_| previous_was_registered) {
+                if let Err(restore_error) = app.global_shortcut().register(previous_shortcut) {
+                    tracing::warn!(error = %restore_error, "unable to restore the previous global shortcut");
+                }
+            }
+            return Err(match UiLocale::current() {
+                UiLocale::TraditionalChinese => {
+                    format!("無法註冊快捷鍵，可能已被其他程式使用：{error}")
+                }
+                UiLocale::English => {
+                    format!("Unable to register the shortcut. Another app may be using it: {error}")
+                }
+            });
+        }
+    }
+    Ok(())
+}
+
+fn show_host_switcher(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("host-switcher") else {
+        tracing::warn!("host switcher window is unavailable");
+        return;
+    };
+    if let Err(error) = window.center() {
+        tracing::warn!(error = %error, "unable to center the host switcher window");
+    }
+    if let Err(error) = window.show() {
+        tracing::warn!(error = %error, "unable to show the host switcher window");
+        return;
+    }
+    if let Err(error) = window.set_focus() {
+        tracing::warn!(error = %error, "unable to focus the host switcher window");
+    }
 }
 
 fn upsert_discovered_peer(settings: &mut AppSettings, peer: &DiscoveredPeer) {
@@ -1399,6 +1674,8 @@ fn migrate_legacy_settings(legacy: LegacySettings) -> AppSettings {
         autostart: legacy.autostart,
         check_updates: legacy.check_updates,
         onboarding_completed: true,
+        host_switcher_enabled: false,
+        host_switcher_shortcut: DEFAULT_HOST_SWITCHER_SHORTCUT.to_owned(),
     }
 }
 
@@ -1658,8 +1935,8 @@ fn launched_from_autostart(args: impl IntoIterator<Item = String>) -> bool {
     args.into_iter().any(|arg| arg == "--autostart")
 }
 
-#[cfg(target_os = "windows")]
-fn hide_windows_main_window(window: &tauri::Window) {
+fn hide_main_window(window: &tauri::Window) {
+    #[cfg(target_os = "windows")]
     if let Err(error) = window.set_skip_taskbar(true) {
         tracing::warn!(error = %error, "unable to remove DisplayMux from the taskbar");
     }
@@ -1759,22 +2036,32 @@ pub fn run() -> anyhow::Result<()> {
             autostart_args(),
         ))
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        show_host_switcher(app);
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build());
-    #[cfg(target_os = "windows")]
-    let builder = builder.on_window_event(|window, event| {
-        if window.label() != "main" {
-            return;
-        }
-        match event {
-            tauri::WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                hide_windows_main_window(window);
+    let builder = builder.on_window_event(|window, event| match (window.label(), event) {
+        ("host-switcher", tauri::WindowEvent::CloseRequested { api, .. }) => {
+            api.prevent_close();
+            if let Err(error) = window.hide() {
+                tracing::warn!(error = %error, "unable to hide the host switcher window");
             }
-            tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
-                hide_windows_main_window(window);
-            }
-            _ => {}
         }
+        ("main", tauri::WindowEvent::CloseRequested { api, .. }) => {
+            api.prevent_close();
+            hide_main_window(window);
+        }
+        #[cfg(target_os = "windows")]
+        ("main", tauri::WindowEvent::Resized(_)) if window.is_minimized().unwrap_or(false) => {
+            hide_main_window(window);
+        }
+        _ => {}
     });
     builder
         .setup(|app| {
@@ -1806,6 +2093,21 @@ pub fn run() -> anyhow::Result<()> {
                 agent_task: Mutex::new(None),
                 discovery,
             });
+            if let Some(runtime) = app.try_state::<AppRuntime>() {
+                let settings = read_settings_inner(&runtime).map_err(anyhow::Error::msg)?;
+                if settings.host_switcher_enabled {
+                    match validate_host_switcher_shortcut(&settings.host_switcher_shortcut) {
+                        Ok(shortcut) => {
+                            if let Err(error) = app.global_shortcut().register(shortcut) {
+                                tracing::warn!(error = %error, "unable to register the saved host switcher shortcut");
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "saved host switcher shortcut is invalid");
+                        }
+                    }
+                }
+            }
             #[cfg(target_os = "windows")]
             {
                 setup_windows_tray(app)?;
@@ -1832,6 +2134,9 @@ pub fn run() -> anyhow::Result<()> {
             remove_peer,
             select_monitor,
             get_settings,
+            get_host_switcher_state,
+            hide_host_switcher,
+            check_host_switcher_shortcut,
             complete_onboarding,
             get_input_options,
             save_settings,
@@ -1926,6 +2231,42 @@ mod tests {
         assert!(settings.peers.is_empty());
         assert!(settings.check_updates);
         assert!(!settings.onboarding_completed);
+        assert!(!settings.host_switcher_enabled);
+        assert_eq!(
+            settings.host_switcher_shortcut,
+            DEFAULT_HOST_SWITCHER_SHORTCUT
+        );
+    }
+
+    #[test]
+    fn host_switcher_shortcut_requires_a_non_shift_modifier() {
+        assert!(validate_host_switcher_shortcut("CommandOrControl+Alt+Space").is_ok());
+        assert!(validate_host_switcher_shortcut("CommandOrControl+KeyK").is_ok());
+        assert!(validate_host_switcher_shortcut("CommandOrControl+Shift+KeyA").is_ok());
+        assert!(validate_host_switcher_shortcut("Control+Super+KeyC").is_ok());
+        assert!(validate_host_switcher_shortcut("CommandOrControl+KeyW").is_err());
+        assert!(validate_host_switcher_shortcut("CommandOrControl+KeyS").is_err());
+        assert!(validate_host_switcher_shortcut("CommandOrControl+Shift+KeyW").is_err());
+        assert!(validate_host_switcher_shortcut("Shift+KeyK").is_err());
+        assert!(validate_host_switcher_shortcut("KeyK").is_err());
+        assert!(validate_host_switcher_shortcut("CommandOrControl+Alt+Shift+KeyA").is_err());
+        assert!(validate_host_switcher_shortcut("not-a-shortcut").is_err());
+    }
+
+    #[test]
+    fn existing_settings_receive_disabled_host_switcher_defaults() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("hostSwitcherEnabled");
+        object.remove("hostSwitcherShortcut");
+
+        let settings = settings_from_value(value);
+
+        assert!(!settings.host_switcher_enabled);
+        assert_eq!(
+            settings.host_switcher_shortcut,
+            DEFAULT_HOST_SWITCHER_SHORTCUT
+        );
     }
 
     #[test]

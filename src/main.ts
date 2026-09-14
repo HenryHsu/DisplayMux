@@ -65,6 +65,8 @@ interface AppSettings {
   autostart: boolean;
   checkUpdates: boolean;
   onboardingCompleted: boolean;
+  hostSwitcherEnabled: boolean;
+  hostSwitcherShortcut: string;
 }
 
 interface DashboardState {
@@ -88,6 +90,7 @@ interface DiscoveredPeer {
 
 interface InputOption { value: number; name: string; }
 interface OperationResult { title: string; detail: string; peerWoken: boolean; warning: boolean; }
+interface ShortcutCheckResult { available: boolean; message: string; }
 interface UpdateInfo { available: boolean; currentVersion: string; version: string | null; notes: string | null; }
 interface ReleaseHistoryItem { date: string; version: string; url: string; }
 interface GitHubRelease {
@@ -115,7 +118,7 @@ const standardInputs: InputOption[] = [
 const previewSettings: AppSettings = {
   localHost: "windows", sharedMonitor: null, localInput: null, supportedInputs: null, peers: [],
   broadcastIp: "255.255.255.255", wakePort: 9, sharedKey: "", waitSeconds: 45, autostart: true, checkUpdates: true,
-  onboardingCompleted: false,
+  onboardingCompleted: false, hostSwitcherEnabled: false, hostSwitcherShortcut: "CommandOrControl+Alt+Space",
 };
 const previewDashboard: DashboardState = {
   platform: "windows", localHost: "windows", agentConfigured: false, ddcAvailable: false,
@@ -128,6 +131,8 @@ let discoveredPeers: DiscoveredPeer[] = [];
 let inputOptions = standardInputs;
 let isPreview = false;
 let pendingUpdate: UpdateInfo | null = null;
+let isRecordingShortcut = false;
+let shortcutStatus: { kind: "checking" | "available" | "conflict"; text: string } | null = null;
 
 const releaseHistoryFallback = [
   { date: "2026-09-14", version: "v0.1.5", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.5" },
@@ -279,6 +284,28 @@ app.innerHTML = `
               <div class="form-section two-columns">
                 <label class="field"><span>${t("settings.password")}</span><div class="input-wrap"><i data-lucide="key-round"></i><input id="shared-key" type="password" minlength="8" placeholder="${t("settings.passwordPlaceholder")}" /></div><small>${t("settings.passwordHint")}</small></label>
                 <label class="field compact"><span>${t("settings.wait")}</span><input id="wait-seconds" type="number" min="5" max="120" /><small>${t("settings.waitHint")}</small></label>
+              </div>
+
+              <div class="form-section shortcut-section">
+                <label class="switch-row shortcut-toggle-row">
+                  <span class="switch-label">
+                    <strong>${t("settings.hostSwitcher")}</strong>
+                    <small>${t("settings.hostSwitcherHint")}</small>
+                  </span>
+                  <input id="host-switcher-enabled" type="checkbox" class="toggle-checkbox" />
+                  <span class="switch-slider"></span>
+                </label>
+                <div class="shortcut-editor">
+                  <div>
+                    <strong>${t("settings.shortcut")}</strong>
+                    <small>${t("settings.shortcutHint")}</small>
+                  </div>
+                  <button id="shortcut-recorder" class="shortcut-recorder" type="button">
+                    <span id="shortcut-value"></span>
+                    <em>${t("settings.recordShortcut")}</em>
+                  </button>
+                </div>
+                <small id="shortcut-status" class="shortcut-status" aria-live="polite"></small>
               </div>
 
               <div class="toggles-section">
@@ -439,6 +466,14 @@ if (languageSelect) {
   });
 }
 document.querySelector<HTMLFormElement>("#settings-form")?.addEventListener("submit", (event) => void saveSettings(event));
+document.querySelector<HTMLInputElement>("#host-switcher-enabled")?.addEventListener("change", () => {
+  renderShortcutSetting();
+  if (document.querySelector<HTMLInputElement>("#host-switcher-enabled")?.checked) {
+    void checkShortcutConflict(settings.hostSwitcherShortcut);
+  }
+});
+document.querySelector<HTMLButtonElement>("#shortcut-recorder")?.addEventListener("click", beginShortcutRecording);
+document.addEventListener("keydown", captureShortcut, true);
 document.querySelector<HTMLSelectElement>("#local-input")?.addEventListener("input", renderInputHints);
 document.querySelector("#monitor-picker")?.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-monitor-id]");
@@ -680,7 +715,115 @@ function renderState(): void {
   if (autostart) autostart.checked = settings.autostart;
   const checkUpdates = document.querySelector<HTMLInputElement>("#check-updates");
   if (checkUpdates) checkUpdates.checked = settings.checkUpdates;
+  const hostSwitcherEnabled = document.querySelector<HTMLInputElement>("#host-switcher-enabled");
+  if (hostSwitcherEnabled) hostSwitcherEnabled.checked = settings.hostSwitcherEnabled;
+  renderShortcutSetting();
   renderMonitors(); renderPeerList(); renderPairedRoutes(); renderHostRoutes(); renderInputHints(); refreshIcons();
+}
+
+function shortcutDisplay(value: string): string {
+  const isMac = dashboard.localHost === "mac";
+  return value.split("+").map((part) => {
+    const key = part.toLowerCase();
+    if (key === "commandorcontrol") return isMac ? "Command" : "Ctrl";
+    if (key === "super") return isMac ? "Command" : "Win";
+    if (key === "alt") return isMac ? "Option" : "Alt";
+    if (key.startsWith("key")) return part.slice(3).toUpperCase();
+    if (key.startsWith("digit")) return part.slice(5);
+    return part;
+  }).join(" + ");
+}
+
+function renderShortcutSetting(): void {
+  const enabled = document.querySelector<HTMLInputElement>("#host-switcher-enabled")?.checked ?? false;
+  const button = document.querySelector<HTMLButtonElement>("#shortcut-recorder");
+  const value = document.querySelector<HTMLElement>("#shortcut-value");
+  const status = document.querySelector<HTMLElement>("#shortcut-status");
+  if (button) button.disabled = !enabled;
+  if (value) value.textContent = isRecordingShortcut ? t("settings.recordingShortcut") : shortcutDisplay(settings.hostSwitcherShortcut);
+  if (status) {
+    status.textContent = enabled ? shortcutStatus?.text ?? "" : "";
+    status.className = `shortcut-status${shortcutStatus ? ` is-${shortcutStatus.kind}` : ""}`;
+  }
+}
+
+function beginShortcutRecording(): void {
+  if (document.querySelector<HTMLButtonElement>("#shortcut-recorder")?.disabled) return;
+  isRecordingShortcut = true;
+  shortcutStatus = null;
+  renderShortcutSetting();
+}
+
+function shortcutFromEvent(event: KeyboardEvent): string | null {
+  if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return null;
+  const parts: string[] = [];
+  const isMac = dashboard.localHost === "mac";
+  if (event.ctrlKey) parts.push(isMac ? "Control" : "CommandOrControl");
+  if (event.altKey) parts.push("Alt");
+  if (event.shiftKey) parts.push("Shift");
+  if (event.metaKey) parts.push(isMac ? "CommandOrControl" : "Super");
+  if (!parts.some((part) => part !== "Shift")) return null;
+  parts.push(event.code);
+  return parts.join("+");
+}
+
+function captureShortcut(event: KeyboardEvent): void {
+  if (!isRecordingShortcut) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (event.key === "Escape") {
+    isRecordingShortcut = false;
+    renderShortcutSetting();
+    return;
+  }
+  const shortcut = shortcutFromEvent(event);
+  if (!shortcut) return;
+  settings.hostSwitcherShortcut = shortcut;
+  isRecordingShortcut = false;
+  renderShortcutSetting();
+  void checkShortcutConflict(shortcut);
+}
+
+async function checkShortcutConflict(shortcut: string): Promise<void> {
+  if (isCommonApplicationShortcut(shortcut)) {
+    shortcutStatus = { kind: "conflict", text: t("settings.shortcutCommonConflict") };
+    renderShortcutSetting();
+    return;
+  }
+  shortcutStatus = { kind: "checking", text: t("settings.shortcutChecking") };
+  renderShortcutSetting();
+  if (isPreview) {
+    shortcutStatus = { kind: "available", text: t("settings.shortcutAvailable") };
+    renderShortcutSetting();
+    return;
+  }
+  try {
+    const result = await invoke<ShortcutCheckResult>("check_host_switcher_shortcut", { shortcut });
+    shortcutStatus = {
+      kind: result.available ? "available" : "conflict",
+      text: result.message,
+    };
+  } catch (error) {
+    shortcutStatus = { kind: "conflict", text: String(error) };
+  }
+  renderShortcutSetting();
+}
+
+function isCommonApplicationShortcut(shortcut: string): boolean {
+  const parts = shortcut.toLowerCase().split("+");
+  const key = (parts.pop() ?? "").replace(/^key/, "");
+  const modifiers = new Set(parts);
+  const primary = modifiers.has("commandorcontrol") ||
+    (dashboard.localHost === "mac" ? modifiers.has("super") : modifiers.has("control"));
+  if (!primary) return false;
+  const additionalModifiers = [...modifiers].filter((modifier) =>
+    !["commandorcontrol", dashboard.localHost === "mac" ? "super" : "control"].includes(modifier)
+  );
+  const primaryOnly = additionalModifiers.length === 0;
+  const primaryWithShift = additionalModifiers.length === 1 && additionalModifiers[0] === "shift";
+  return (primaryOnly && new Set([
+    "a", "c", "f", "h", "l", "m", "n", "o", "p", "q", "r", "s", "t", "v", "w", "x", "y", "z", "tab", "f4",
+  ]).has(key)) || (primaryWithShift && new Set(["n", "p", "r", "s", "t", "w"]).has(key));
 }
 
 function renderMonitors(): void {
@@ -870,6 +1013,8 @@ async function saveSettings(event: SubmitEvent): Promise<void> {
       waitSeconds: Number(document.querySelector<HTMLInputElement>("#wait-seconds")?.value ?? 45),
       autostart: document.querySelector<HTMLInputElement>("#autostart")?.checked ?? true,
       checkUpdates: document.querySelector<HTMLInputElement>("#check-updates")?.checked ?? true,
+      hostSwitcherEnabled: document.querySelector<HTMLInputElement>("#host-switcher-enabled")?.checked ?? false,
+      hostSwitcherShortcut: settings.hostSwitcherShortcut,
     };
     const result = await invoke<OperationResult>("save_settings", { settings });
     showToast(result.title, result.detail); await refresh();

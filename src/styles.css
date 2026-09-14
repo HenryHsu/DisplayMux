@@ -917,6 +917,22 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   gap: 12px;
 }
 
+.shortcut-section { display: grid; gap: 18px; }
+.shortcut-toggle-row { padding: 0 0 18px; border-bottom: 1px solid var(--line-light); }
+.shortcut-editor { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.shortcut-editor > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.shortcut-editor strong { font-size: 14px; }
+.shortcut-editor small { max-width: 620px; color: var(--muted); font-size: 12px; }
+.shortcut-recorder { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; min-width: 220px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card-bg); cursor: pointer; }
+.shortcut-recorder:hover:not(:disabled) { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(19, 115, 86, 0.08); }
+.shortcut-recorder:disabled { cursor: not-allowed; opacity: 0.5; }
+.shortcut-recorder span { color: var(--ink); font-size: 13px; font-weight: 750; }
+.shortcut-recorder em { margin-left: auto; color: var(--accent); font-size: 11px; font-style: normal; font-weight: 750; }
+.shortcut-status { min-height: 18px; color: var(--muted); font-size: 12px; font-weight: 650; }
+.shortcut-status.is-checking { color: var(--muted); }
+.shortcut-status.is-available { color: var(--accent); }
+.shortcut-status.is-conflict { color: #a54735; }
+
 .switch-row {
   display: flex;
   align-items: center;
