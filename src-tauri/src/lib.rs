@@ -1758,6 +1758,7 @@ pub fn run() -> anyhow::Result<()> {
             MacosLauncher::LaunchAgent,
             autostart_args(),
         ))
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
     #[cfg(target_os = "windows")]
     let builder = builder.on_window_event(|window, event| {

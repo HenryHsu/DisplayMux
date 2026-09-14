@@ -215,6 +215,7 @@ const en = {
   "toast.updateFailed": "Unable to check for updates",
   "toast.installFailed": "Update was not installed",
   "toast.onboardingFailed": "Unable to save setup guide status",
+  "toast.openLinkFailed": "Unable to open link",
   "preview.monitorStatus": "Select a shared display on the settings page",
 } as const;
 

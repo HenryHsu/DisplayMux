@@ -76,7 +76,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "toast.peerAddFailed": "無法加入主機", "toast.peerRemoveFailed": "無法移除主機", "toast.settingsFailed": "設定未儲存", "toast.switchFailed": "切換失敗",
   "toast.probeFailed": "連線測試失敗", "toast.wakeFailed": "喚醒失敗", "toast.updateUnavailable": "無法檢查更新",
   "toast.updateUnavailableBody": "請從已安裝的 DisplayMux 執行更新檢查。", "toast.updateFailed": "無法檢查更新", "toast.installFailed": "更新未安裝",
-  "toast.onboardingFailed": "無法儲存設定引導狀態",
+  "toast.onboardingFailed": "無法儲存設定引導狀態", "toast.openLinkFailed": "無法開啟連結",
   "preview.monitorStatus": "請在設定頁選擇共用螢幕",
 };
 

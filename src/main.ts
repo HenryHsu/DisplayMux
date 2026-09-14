@@ -6,6 +6,7 @@ import {
 } from "lucide";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import packageMetadata from "../package.json";
 import { locale, localePreference, setLocalePreference, t } from "./i18n";
 import "./styles.css";
@@ -88,6 +89,13 @@ interface DiscoveredPeer {
 interface InputOption { value: number; name: string; }
 interface OperationResult { title: string; detail: string; peerWoken: boolean; warning: boolean; }
 interface UpdateInfo { available: boolean; currentVersion: string; version: string | null; notes: string | null; }
+interface ReleaseHistoryItem { date: string; version: string; url: string; }
+interface GitHubRelease {
+  tag_name?: unknown;
+  published_at?: unknown;
+  draft?: unknown;
+  prerelease?: unknown;
+}
 type SwitchProgressEvent =
   | { event: "waking"; peerName: string }
   | { event: "checking"; peerName: string }
@@ -121,13 +129,14 @@ let inputOptions = standardInputs;
 let isPreview = false;
 let pendingUpdate: UpdateInfo | null = null;
 
-const releaseHistory = [
-  { date: "2026-09-14", version: "v0.1.4" },
-  { date: "2026-09-13", version: "v0.1.3" },
-  { date: "2026-09-12", version: "v0.1.2" },
-  { date: "2026-09-11", version: "v0.1.1" },
-  { date: "2026-09-11", version: "v0.1.0" },
-] as const;
+const releaseHistoryFallback = [
+  { date: "2026-09-14", version: "v0.1.5", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.5" },
+  { date: "2026-09-14", version: "v0.1.4", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.4" },
+  { date: "2026-09-13", version: "v0.1.3", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.3" },
+  { date: "2026-09-12", version: "v0.1.2", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.2" },
+  { date: "2026-09-11", version: "v0.1.1", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.1" },
+  { date: "2026-09-11", version: "v0.1.0", url: "https://github.com/HenryHsu/DisplayMux/releases/tag/v0.1.0" },
+] satisfies ReleaseHistoryItem[];
 
 const releaseUrl = (version: string) => `https://github.com/HenryHsu/DisplayMux/releases/tag/${version}`;
 
@@ -322,8 +331,8 @@ app.innerHTML = `
             <div class="release-table-wrap">
               <table class="release-table">
                 <thead><tr><th scope="col">${t("help.releaseDate")}</th><th scope="col">${t("help.releaseVersion")}</th><th scope="col">${t("help.releaseLink")}</th></tr></thead>
-                <tbody>
-                  ${releaseHistory.map((release) => `<tr><td>${release.date}</td><td><code>${release.version}</code></td><td><a href="${releaseUrl(release.version)}" target="_blank" rel="noopener noreferrer">${t("help.viewRelease")}<i data-lucide="external-link"></i></a></td></tr>`).join("")}
+                <tbody id="release-history-body">
+                  ${releaseHistoryRows(releaseHistoryFallback)}
                 </tbody>
               </table>
             </div>
@@ -347,7 +356,7 @@ app.innerHTML = `
               </div>
               <div class="about-item">
                 <dt><i data-lucide="github"></i>GitHub</dt>
-                <dd><a href="https://github.com/HenryHsu/DisplayMux" target="_blank" rel="noopener noreferrer">HenryHsu/DisplayMux<i data-lucide="external-link"></i></a></dd>
+                <dd><a href="https://github.com/HenryHsu/DisplayMux" data-external-url>HenryHsu/DisplayMux<i data-lucide="external-link"></i></a></dd>
               </div>
               <div class="about-item">
                 <dt><i data-lucide="activity"></i>${t("about.version")}</dt>
@@ -416,6 +425,12 @@ document.querySelector<HTMLButtonElement>('[data-page="settings"]')?.addEventLis
 window.addEventListener("resize", () => positionOnboardingTooltip());
 document.querySelector(".workspace")?.addEventListener("scroll", () => positionOnboardingTooltip());
 document.querySelector<HTMLButtonElement>("#scan-button")?.addEventListener("click", () => void scanPeers());
+document.addEventListener("click", (event) => {
+  const link = (event.target as HTMLElement).closest<HTMLAnchorElement>("a[data-external-url]");
+  if (!link) return;
+  event.preventDefault();
+  void openExternalUrl(link.href);
+});
 const languageSelect = document.querySelector<HTMLSelectElement>("#language-select");
 if (languageSelect) {
   languageSelect.value = localePreference;
@@ -450,6 +465,73 @@ function showPage(page: string): void {
   document.querySelector(`#${page}-page`)?.classList.add("is-active");
   document.querySelectorAll(".nav-button").forEach((item) => item.classList.toggle("is-active", (item as HTMLElement).dataset.page === page));
   setText("#page-title", pageTitles[page] ?? pageTitles.dashboard);
+}
+
+function releaseHistoryRows(releases: ReleaseHistoryItem[]): string {
+  return releases.map((release) => `
+    <tr>
+      <td>${escapeHtml(release.date)}</td>
+      <td><code>${escapeHtml(release.version)}</code></td>
+      <td><a href="${escapeHtml(release.url)}" data-external-url>${t("help.viewRelease")}<i data-lucide="external-link"></i></a></td>
+    </tr>
+  `).join("");
+}
+
+async function refreshReleaseHistory(): Promise<void> {
+  try {
+    const response = await fetch("https://api.github.com/repos/HenryHsu/DisplayMux/releases?per_page=30", {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!response.ok) throw new Error(`GitHub Releases API returned ${response.status}`);
+    const payload: unknown = await response.json();
+    if (!Array.isArray(payload)) throw new Error("GitHub Releases API returned an invalid response");
+
+    const seen = new Set<string>();
+    const releases = (payload as GitHubRelease[]).flatMap((release): ReleaseHistoryItem[] => {
+      const version = typeof release.tag_name === "string" ? release.tag_name : "";
+      const publishedAt = typeof release.published_at === "string" ? release.published_at : "";
+      if (release.draft === true || release.prerelease === true || !/^v\d+\.\d+\.\d+$/.test(version) || !/^\d{4}-\d{2}-\d{2}T/.test(publishedAt) || seen.has(version)) return [];
+      seen.add(version);
+      return [{ date: publishedAt.slice(0, 10), version, url: releaseUrl(version) }];
+    });
+    releases.sort((left, right) => compareReleaseVersions(right.version, left.version));
+    if (!releases.length) return;
+
+    const body = document.querySelector<HTMLTableSectionElement>("#release-history-body");
+    if (body) {
+      body.innerHTML = releaseHistoryRows(releases);
+      refreshIcons();
+    }
+  } catch {
+    // Keep the bundled history available when GitHub is unreachable or rate-limited.
+  }
+}
+
+function compareReleaseVersions(left: string, right: string): number {
+  const leftParts = left.slice(1).split(".").map(Number);
+  const rightParts = right.slice(1).split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+async function openExternalUrl(value: string): Promise<void> {
+  try {
+    const url = new URL(value);
+    const repositoryPath = "/HenryHsu/DisplayMux";
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || (url.pathname !== repositoryPath && !url.pathname.startsWith(`${repositoryPath}/`))) {
+      throw new Error("unsupported external URL");
+    }
+    if (isPreview) {
+      window.open(url.href, "_blank", "noopener,noreferrer");
+    } else {
+      await openUrl(url.href);
+    }
+  } catch (error) {
+    showToast(t("toast.openLinkFailed"), String(error), true);
+  }
 }
 
 async function refresh(): Promise<void> {
@@ -1168,6 +1250,7 @@ async function bootstrap(): Promise<void> {
     try { await invoke("set_locale", { locale }); } catch { /* Preview mode has no Tauri backend. */ }
   }
   await Promise.all([refresh(), renderAppVersion()]);
+  void refreshReleaseHistory();
   if (!settings.onboardingCompleted) showOnboarding(0);
   if (settings.checkUpdates && !isPreview) window.setTimeout(() => void checkForUpdates(false), 1800);
 }
