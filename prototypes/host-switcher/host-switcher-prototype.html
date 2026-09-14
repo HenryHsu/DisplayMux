@@ -8,7 +8,7 @@
     我的假設：
     - 使用者只設定一組全域快捷鍵，用來叫出獨立、置中的主機切換視窗。
     - Windows 與 macOS 各自在本機儲存快捷鍵，因此以平台熟悉的鍵帽顯示。
-    - Tab 巡覽由切換器自行控制，不依賴 macOS 的系統鍵盤導覽設定。
+    - Tab、Shift + Tab 與上下方向鍵巡覽由切換器自行控制，不依賴 macOS 的系統鍵盤導覽設定。
     - 點擊主機等同選取並確認；Enter 確認目前焦點；Esc 直接關閉。
     - 這是互動與畫面示意，不會註冊系統快捷鍵，也不會真的切換螢幕。
   -->
@@ -247,7 +247,7 @@
           </div>
           <footer class="switcher-foot">
             <div class="keyboard-help">
-              <span class="help-item"><span class="mini-key">Tab</span>移動</span>
+              <span class="help-item"><span class="mini-key">Tab</span><span class="mini-key">↑↓</span>移動</span>
               <span class="help-item"><span class="mini-key">Enter</span>選取</span>
               <span class="help-item"><span class="mini-key">Esc</span>關閉</span>
             </div>
@@ -405,9 +405,9 @@
       }
 
       if (!state.open) return;
-      if (event.key === "Tab") {
+      if (event.key === "Tab" || event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        const direction = event.shiftKey ? -1 : 1;
+        const direction = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
         state.selectedIndex = (state.selectedIndex + direction + hostOptions.length) % hostOptions.length;
         renderSelection();
       } else if (event.key === "Enter") {
