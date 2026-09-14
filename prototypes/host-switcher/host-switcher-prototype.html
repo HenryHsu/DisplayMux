@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DisplayMux 主機切換器原型</title>
+  <!--
+    我的假設：
+    - 使用者只設定一組全域快捷鍵，用來叫出獨立、置中的主機切換視窗。
+    - Windows 與 macOS 各自在本機儲存快捷鍵，因此以平台熟悉的鍵帽顯示。
+    - Tab 巡覽由切換器自行控制，不依賴 macOS 的系統鍵盤導覽設定。
+    - 點擊主機等同選取並確認；Enter 確認目前焦點；Esc 直接關閉。
+    - 這是互動與畫面示意，不會註冊系統快捷鍵，也不會真的切換螢幕。
+  -->
+  <style>
+    @font-face {
+      font-family: "Manrope Prototype";
+      src: url("../../node_modules/@fontsource-variable/manrope/files/manrope-latin-wght-normal.woff2") format("woff2");
+      font-weight: 200 800;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    :root {
+      font-family: "Manrope Prototype", "Segoe UI", sans-serif;
+      color: #17211e;
+      background: #e8ece9;
+      font-synthesis: none;
+      --sidebar: #141d19;
+      --sidebar-active: #1d5c42;
+      --workspace: #f1f4f2;
+      --panel: #fcfdfc;
+      --ink: #17211e;
+      --muted: #5a6662;
+      --subtle: #798680;
+      --line: #d9dfdb;
+      --line-light: #e6ece8;
+      --accent: #137356;
+      --accent-hover: #0e5c44;
+      --accent-light: #eaf5f0;
+      --accent-border: #92c9b4;
+      --danger: #a35b18;
+      --shadow-window: 0 18px 48px rgba(20, 35, 28, 0.1);
+      --shadow-dialog: 0 30px 90px rgba(7, 18, 13, 0.28), 0 2px 10px rgba(7, 18, 13, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 960px; min-height: 680px; overflow: hidden; }
+    button { font: inherit; color: inherit; }
+    button:focus-visible { outline: 3px solid rgba(19, 115, 86, 0.28); outline-offset: 2px; }
+
+    .prototype-shell {
+      display: grid;
+      grid-template-columns: 210px 1fr;
+      width: 100vw;
+      height: 100vh;
+      padding: 14px;
+      gap: 14px;
+      background: #e8ece9;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      padding: 20px 14px 16px;
+      border-radius: 18px;
+      background: var(--sidebar);
+      box-shadow: var(--shadow-window);
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; padding: 4px 6px 20px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .brand img { width: 36px; height: 36px; border-radius: 10px; }
+    .brand strong { color: #fff; font-size: 18px; letter-spacing: -.02em; }
+    .nav { display: grid; gap: 8px; margin-top: 18px; }
+    .nav-item { height: 44px; padding: 0 14px; border: 0; border-radius: 12px; background: transparent; color: #8e9b96; text-align: left; font-weight: 720; }
+    .nav-item.active { color: #fff; background: var(--sidebar-active); }
+    .sidebar-note { margin-top: auto; padding: 0 10px 4px; color: #8e9b96; font-size: 12px; line-height: 1.6; }
+
+    .workspace {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.85);
+      border-radius: 18px;
+      background: var(--workspace);
+      box-shadow: var(--shadow-window);
+    }
+
+    .topbar { display: flex; align-items: center; justify-content: space-between; height: 76px; padding: 0 32px; border-bottom: 1px solid var(--line); }
+    .topbar h1 { margin: 0; font-size: 23px; letter-spacing: -.025em; }
+    .platform-control { display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .platform-button { height: 32px; padding: 0 13px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 750; cursor: pointer; }
+    .platform-button.active { color: #fff; background: var(--sidebar); }
+
+    .content { width: min(820px, calc(100% - 64px)); margin: 26px auto; }
+    .section-kicker { margin: 0 0 5px; color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .12em; }
+    .intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+    .intro h2 { margin: 0; font-size: 22px; letter-spacing: -.025em; }
+    .intro p { max-width: 520px; margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+    .status-pill { flex: 0 0 auto; padding: 7px 10px; border-radius: 999px; background: var(--accent-light); color: var(--accent); font-size: 11px; font-weight: 800; }
+
+    .settings-card { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: 0 4px 18px rgba(25,38,33,.04); }
+    .setting-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(340px, 1.2fr); align-items: center; gap: 24px; padding: 23px 24px; }
+    .setting-row + .setting-row { border-top: 1px solid var(--line-light); }
+    .setting-copy strong { display: block; font-size: 14px; }
+    .setting-copy small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .switch { justify-self: end; position: relative; width: 44px; height: 24px; border: 0; border-radius: 99px; background: var(--accent); cursor: pointer; }
+    .switch::after { content: ""; position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .16s ease; }
+    .switch.off { background: #b8c0bc; }
+    .switch.off::after { transform: translateX(-20px); }
+
+    .shortcut-editor { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+    .key-field { display: flex; align-items: center; justify-content: center; min-width: 222px; min-height: 44px; gap: 6px; padding: 6px 10px; border: 1px solid #cbd4cf; border-radius: 9px; background: #fff; }
+    .key-field.capturing { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(19,115,86,.11); color: var(--accent); }
+    .keycap { display: inline-grid; place-items: center; min-width: 32px; height: 28px; padding: 0 8px; border: 1px solid #ccd4cf; border-bottom-width: 2px; border-radius: 6px; background: #f7f9f8; color: #34413b; font-size: 12px; font-weight: 800; line-height: 1; }
+    .keycap.symbol { min-width: 30px; font-size: 16px; }
+    .plus { color: var(--subtle); font-size: 11px; }
+    .secondary-button, .primary-button { height: 44px; padding: 0 16px; border-radius: 9px; font-weight: 780; cursor: pointer; }
+    .secondary-button { border: 1px solid #cbd4cf; background: #fff; color: var(--accent); }
+    .primary-button { border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+    .primary-button:hover { background: var(--accent-hover); }
+    .platform-note { margin: 12px 0 0; color: var(--subtle); font-size: 11px; text-align: right; }
+    .action-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; padding: 16px 18px; border: 1px dashed #cbd4cf; border-radius: 12px; color: var(--muted); font-size: 12px; }
+    .last-selection { color: var(--accent); font-weight: 800; }
+
+    .scrim { position: absolute; inset: 0; display: grid; place-items: center; padding: 30px; background: rgba(12, 22, 17, .42); backdrop-filter: blur(3px); opacity: 0; pointer-events: none; transition: opacity .18s ease; }
+    .scrim.open { opacity: 1; pointer-events: auto; }
+
+    .switcher {
+      width: min(580px, calc(100vw - 80px));
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.65);
+      border-radius: 18px;
+      background: #fbfcfb;
+      box-shadow: var(--shadow-dialog);
+      transform: translateY(8px) scale(.985);
+      opacity: 0;
+      transition: transform .18s ease, opacity .18s ease;
+    }
+    .scrim.open .switcher { transform: translateY(0) scale(1); opacity: 1; }
+    .switcher-head { display: flex; justify-content: space-between; gap: 24px; padding: 24px 24px 18px; border-bottom: 1px solid var(--line-light); }
+    .switcher-head h2 { margin: 0; font-size: 20px; letter-spacing: -.025em; text-wrap: balance; }
+    .switcher-head p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+    .window-label { align-self: flex-start; flex: 0 0 auto; padding: 6px 9px; border-radius: 7px; background: #eef2ef; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .06em; }
+    .host-list { display: grid; gap: 9px; padding: 16px; }
+    .host-option { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 13px; width: 100%; min-height: 72px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: #fff; text-align: left; cursor: pointer; transition: border-color .12s ease, background .12s ease, box-shadow .12s ease; }
+    .host-option:hover { border-color: #aebdb5; background: #fafcfb; }
+    .host-option.selected { border-color: var(--accent); background: var(--accent-light); box-shadow: 0 0 0 2px rgba(19,115,86,.12); }
+    .host-option.confirming { background: var(--accent); color: #fff; }
+    .host-mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 10px; background: #edf2ef; color: #314139; font-size: 12px; font-weight: 850; }
+    .selected .host-mark { background: #d8eee5; color: var(--accent); }
+    .confirming .host-mark { background: rgba(255,255,255,.16); color: #fff; }
+    .host-name { display: block; font-size: 14px; font-weight: 800; }
+    .host-meta { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .confirming .host-meta { color: rgba(255,255,255,.76); }
+    .host-state { color: var(--subtle); font-size: 11px; font-weight: 750; }
+    .selected .host-state { color: var(--accent); }
+    .confirming .host-state { color: #fff; }
+
+    .switcher-foot { display: flex; align-items: center; justify-content: space-between; padding: 13px 20px; border-top: 1px solid var(--line-light); background: #f4f7f5; color: var(--muted); font-size: 11px; }
+    .keyboard-help { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .help-item { display: inline-flex; align-items: center; gap: 5px; }
+    .mini-key { display: inline-grid; place-items: center; min-width: 22px; height: 20px; padding: 0 5px; border: 1px solid #c9d2cd; border-bottom-width: 2px; border-radius: 5px; background: #fff; color: #34413b; font-size: 10px; font-weight: 800; }
+    .prototype-tag { color: var(--subtle); font-weight: 750; }
+
+    .hint-toast { position: fixed; left: 50%; bottom: 30px; z-index: 5; padding: 11px 15px; border: 1px solid var(--accent-border); border-radius: 9px; background: #f5fbf8; color: var(--accent); box-shadow: 0 10px 30px rgba(20,35,28,.12); font-size: 12px; font-weight: 800; opacity: 0; transform: translate(-50%, 8px); pointer-events: none; transition: .18s ease; }
+    .hint-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+    @media (max-width: 1080px) {
+      .prototype-shell { grid-template-columns: 180px 1fr; }
+      .setting-row { grid-template-columns: 1fr; gap: 14px; }
+      .shortcut-editor { justify-content: flex-start; }
+      .platform-note { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <main class="prototype-shell">
+    <aside class="sidebar">
+      <div class="brand"><img src="assets/app-icon.svg" alt="DisplayMux" /><strong>DisplayMux</strong></div>
+      <nav class="nav" aria-label="主要導覽">
+        <button class="nav-item">切換中心</button>
+        <button class="nav-item active">螢幕與主機</button>
+        <button class="nav-item">使用說明</button>
+      </nav>
+      <p class="sidebar-note">互動原型<br />快捷鍵不會真的註冊到系統</p>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <h1>快速切換設定</h1>
+        <div class="platform-control" role="group" aria-label="預覽平台">
+          <button class="platform-button active" data-platform="windows">Windows</button>
+          <button class="platform-button" data-platform="macos">macOS</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <div class="intro">
+          <div>
+            <p class="section-kicker">HOST SWITCHER</p>
+            <h2>從任何地方叫出主機切換器</h2>
+            <p>設定一組全域快捷鍵。即使 DisplayMux 已縮小，也能叫出置中的小視窗，使用鍵盤或滑鼠選擇主機。</p>
+          </div>
+          <span class="status-pill">獨立置頂視窗</span>
+        </div>
+
+        <section class="settings-card" aria-label="快速切換設定">
+          <div class="setting-row">
+            <div class="setting-copy"><strong>啟用全域快捷鍵</strong><small>讓 DisplayMux 在背景執行時仍可叫出主機切換器。</small></div>
+            <button class="switch" id="enable-switch" type="button" role="switch" aria-checked="true" aria-label="啟用全域快捷鍵"></button>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy"><strong>開啟主機切換器</strong><small id="shortcut-description">按下組合鍵即可在目前畫面中央顯示選擇視窗。</small></div>
+            <div>
+              <div class="shortcut-editor">
+                <div class="key-field" id="key-field" aria-live="polite"></div>
+                <button class="secondary-button" id="record-button" type="button">重新錄製</button>
+              </div>
+              <p class="platform-note" id="platform-note"></p>
+            </div>
+          </div>
+        </section>
+
+        <div class="action-bar">
+          <span>最近選取：<span class="last-selection" id="last-selection">這台 Windows 電腦</span></span>
+          <button class="primary-button" id="open-switcher" type="button">預覽主機切換器</button>
+        </div>
+      </div>
+
+      <div class="scrim open" id="scrim" aria-hidden="false">
+        <section class="switcher" role="dialog" aria-modal="true" aria-labelledby="switcher-title" aria-describedby="switcher-description">
+          <header class="switcher-head">
+            <div><h2 id="switcher-title">切換到哪一台主機？</h2><p id="switcher-description">選擇共用螢幕接下來要顯示的電腦。</p></div>
+            <span class="window-label" id="window-label">Windows 置頂視窗</span>
+          </header>
+          <div class="host-list" role="listbox" aria-label="可切換的主機">
+            <button class="host-option selected" type="button" role="option" aria-selected="true" data-host="這台 Windows 電腦">
+              <span class="host-mark">WIN</span>
+              <span><span class="host-name">這台 Windows 電腦</span><span class="host-meta">本機 · HDMI 1</span></span>
+              <span class="host-state">目前選取</span>
+            </button>
+            <button class="host-option" type="button" role="option" aria-selected="false" data-host="工作用 Mac mini">
+              <span class="host-mark">MAC</span>
+              <span><span class="host-name">工作用 Mac mini</span><span class="host-meta">已連線 · DisplayPort</span></span>
+              <span class="host-state">可切換</span>
+            </button>
+          </div>
+          <footer class="switcher-foot">
+            <div class="keyboard-help">
+              <span class="help-item"><span class="mini-key">Tab</span>移動</span>
+              <span class="help-item"><span class="mini-key">Enter</span>選取</span>
+              <span class="help-item"><span class="mini-key">Esc</span>關閉</span>
+            </div>
+            <span class="prototype-tag">互動示意</span>
+          </footer>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div class="hint-toast" id="toast" role="status"></div>
+
+  <script>
+    const state = {
+      platform: "windows",
+      enabled: true,
+      open: true,
+      selectedIndex: 0,
+      capturing: false,
+      shortcuts: {
+        windows: ["Ctrl", "Alt", "Space"],
+        macos: ["⌥", "⌘", "Space"],
+      },
+    };
+
+    const scrim = document.querySelector("#scrim");
+    const keyField = document.querySelector("#key-field");
+    const recordButton = document.querySelector("#record-button");
+    const enableSwitch = document.querySelector("#enable-switch");
+    const openSwitcherButton = document.querySelector("#open-switcher");
+    const platformNote = document.querySelector("#platform-note");
+    const windowLabel = document.querySelector("#window-label");
+    const toast = document.querySelector("#toast");
+    const hostOptions = [...document.querySelectorAll(".host-option")];
+    let toastTimer = 0;
+
+    function renderShortcut() {
+      if (state.capturing) {
+        keyField.classList.add("capturing");
+        keyField.textContent = "請按下新的組合鍵";
+        recordButton.textContent = "取消";
+        return;
+      }
+      keyField.classList.remove("capturing");
+      recordButton.textContent = "重新錄製";
+      keyField.innerHTML = state.shortcuts[state.platform].map((key, index) => {
+        const symbol = state.platform === "macos" && key !== "Space" ? " symbol" : "";
+        const separator = index ? '<span class="plus">+</span>' : "";
+        return `${separator}<span class="keycap${symbol}">${key}</span>`;
+      }).join("");
+      platformNote.textContent = state.platform === "macos"
+        ? "macOS 使用 Command／Option 鍵位，設定只儲存在這台 Mac。"
+        : "Windows 使用 Ctrl／Alt 鍵位，設定只儲存在這台電腦。";
+      windowLabel.textContent = state.platform === "macos" ? "macOS 置頂視窗" : "Windows 置頂視窗";
+    }
+
+    function renderSelection() {
+      hostOptions.forEach((option, index) => {
+        const selected = index === state.selectedIndex;
+        option.classList.toggle("selected", selected);
+        option.classList.remove("confirming");
+        option.setAttribute("aria-selected", String(selected));
+        option.querySelector(".host-state").textContent = selected ? "按 Enter 選取" : "可切換";
+      });
+    }
+
+    function setSwitcher(open) {
+      if (open && !state.enabled) {
+        showToast("請先啟用全域快捷鍵");
+        return;
+      }
+      state.open = open;
+      scrim.classList.toggle("open", open);
+      scrim.setAttribute("aria-hidden", String(!open));
+      if (open) {
+        state.selectedIndex = 0;
+        renderSelection();
+      } else {
+        openSwitcherButton.focus();
+      }
+    }
+
+    function confirmSelection(index) {
+      state.selectedIndex = index;
+      renderSelection();
+      const option = hostOptions[index];
+      option.classList.add("confirming");
+      option.querySelector(".host-state").textContent = "切換中";
+      document.querySelector("#last-selection").textContent = option.dataset.host;
+      window.setTimeout(() => {
+        setSwitcher(false);
+        showToast(`已選取「${option.dataset.host}」`);
+      }, 520);
+    }
+
+    function showToast(message) {
+      window.clearTimeout(toastTimer);
+      toast.textContent = message;
+      toast.classList.add("show");
+      toastTimer = window.setTimeout(() => toast.classList.remove("show"), 1800);
+    }
+
+    document.querySelectorAll("[data-platform]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.platform = button.dataset.platform;
+        document.querySelectorAll("[data-platform]").forEach((item) => item.classList.toggle("active", item === button));
+        renderShortcut();
+      });
+    });
+
+    enableSwitch.addEventListener("click", () => {
+      state.enabled = !state.enabled;
+      enableSwitch.classList.toggle("off", !state.enabled);
+      enableSwitch.setAttribute("aria-checked", String(state.enabled));
+      showToast(state.enabled ? "全域快捷鍵已啟用" : "全域快捷鍵已停用");
+    });
+
+    recordButton.addEventListener("click", () => {
+      state.capturing = !state.capturing;
+      renderShortcut();
+    });
+
+    openSwitcherButton.addEventListener("click", () => setSwitcher(true));
+    hostOptions.forEach((option, index) => option.addEventListener("click", () => confirmSelection(index)));
+    scrim.addEventListener("click", (event) => { if (event.target === scrim) setSwitcher(false); });
+
+    document.addEventListener("keydown", (event) => {
+      if (state.capturing) {
+        event.preventDefault();
+        if (event.key === "Escape") {
+          state.capturing = false;
+          renderShortcut();
+          return;
+        }
+        if (["Control", "Alt", "Meta", "Shift"].includes(event.key)) return;
+        const keys = [];
+        if (state.platform === "macos") {
+          if (event.altKey) keys.push("⌥");
+          if (event.metaKey) keys.push("⌘");
+          if (event.shiftKey) keys.push("⇧");
+          if (event.ctrlKey) keys.push("⌃");
+        } else {
+          if (event.ctrlKey) keys.push("Ctrl");
+          if (event.altKey) keys.push("Alt");
+          if (event.shiftKey) keys.push("Shift");
+          if (event.metaKey) keys.push("Win");
+        }
+        const displayKey = event.code === "Space" ? "Space" : event.key.length === 1 ? event.key.toUpperCase() : event.key;
+        keys.push(displayKey);
+        state.shortcuts[state.platform] = keys;
+        state.capturing = false;
+        renderShortcut();
+        showToast("快捷鍵示意已更新");
+        return;
+      }
+
+      if (!state.open) return;
+      if (event.key === "Tab") {
+        event.preventDefault();
+        const direction = event.shiftKey ? -1 : 1;
+        state.selectedIndex = (state.selectedIndex + direction + hostOptions.length) % hostOptions.length;
+        renderSelection();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        confirmSelection(state.selectedIndex);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        setSwitcher(false);
+      }
+    });
+
+    renderShortcut();
+    renderSelection();
+  </script>
+</body>
+</html>
