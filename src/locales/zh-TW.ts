@@ -35,6 +35,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "help.inputTitle": "加入其他主機", "help.inputBody": "雙方使用相同配對密碼並選擇同一台螢幕時，加入已設定好的主機會自動帶入對方的 Port；無法安全確認時才需要手動選擇。",
   "help.autoTitle": "一鍵切換", "help.autoBody": "在切換中心選擇目標主機即可。DisplayMux 會自動處理喚醒、Agent 確認與 DDC/CI 切換，不需要選擇切換模式。",
   "help.adapterTitle": "DDC/CI 與連接限制", "help.adapterBody": "請先在螢幕選單開啟 DDC/CI。部分 Dock、DisplayLink 或轉接器只能傳送畫面，無法轉送控制訊號；偵測失敗時請改用直連測試。",
+  "help.releaseHistoryTitle": "版本紀錄", "help.releaseDate": "更新日期", "help.releaseVersion": "版本", "help.releaseLink": "GitHub 連結", "help.viewRelease": "查看版本內容",
   "about.title": "關於 DisplayMux", "about.developer": "開發者", "about.version": "工具版本", "about.loading": "讀取中",
   "operation.running": "正在執行", "operation.preparingTitle": "正在準備切換", "operation.preparingBody": "系統正在選擇可用的喚醒、網路與 DDC/CI 路徑。",
   "operation.wakingTitle": "正在喚醒 {name}", "operation.wakingBody": "正在嘗試送出 Wake-on-LAN，接著會確認目標主機是否就緒。",

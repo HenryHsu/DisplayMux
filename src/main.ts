@@ -119,6 +119,16 @@ let inputOptions = standardInputs;
 let isPreview = false;
 let pendingUpdate: UpdateInfo | null = null;
 
+const releaseHistory = [
+  { date: "2026-09-14", version: "v0.1.4" },
+  { date: "2026-09-13", version: "v0.1.3" },
+  { date: "2026-09-12", version: "v0.1.2" },
+  { date: "2026-09-11", version: "v0.1.1" },
+  { date: "2026-09-11", version: "v0.1.0" },
+] as const;
+
+const releaseUrl = (version: string) => `https://github.com/HenryHsu/DisplayMux/releases/tag/${version}`;
+
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error(t("app.rootMissing"));
 document.documentElement.lang = locale;
@@ -260,6 +270,18 @@ app.innerHTML = `
             <article><span>04</span><div><h3>${t("help.adapterTitle")}</h3><p>${t("help.adapterBody")}</p></div></article>
           </div>
 
+          <section class="release-history" aria-labelledby="release-history-title">
+            <p class="section-kicker">RELEASE HISTORY</p><h2 id="release-history-title">${t("help.releaseHistoryTitle")}</h2>
+            <div class="release-table-wrap">
+              <table class="release-table">
+                <thead><tr><th scope="col">${t("help.releaseDate")}</th><th scope="col">${t("help.releaseVersion")}</th><th scope="col">${t("help.releaseLink")}</th></tr></thead>
+                <tbody>
+                  ${releaseHistory.map((release) => `<tr><td>${release.date}</td><td><code>${release.version}</code></td><td><a href="${releaseUrl(release.version)}" target="_blank" rel="noopener noreferrer">${t("help.viewRelease")}<i data-lucide="external-link"></i></a></td></tr>`).join("")}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           <section class="about-section" aria-labelledby="about-title">
             <p class="section-kicker">ABOUT</p><h2 id="about-title">${t("about.title")}</h2>
             <dl class="about-grid">
@@ -283,7 +305,7 @@ app.innerHTML = `
   </div>
   <div class="operation-overlay" id="operation-overlay" aria-live="polite" aria-hidden="true"><div class="operation-dialog"><div class="spinner"></div><p class="section-kicker">SMART SWITCH</p><h2 id="operation-title">${t("operation.running")}</h2><p id="operation-detail">${t("operation.preparingBody")}</p></div></div>
   <div class="update-overlay" id="update-overlay" aria-hidden="true">
-    <div class="update-dialog">
+    <div class="update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-title" aria-describedby="update-version">
       <p class="section-kicker">SIGNED UPDATE</p>
       <h2 id="update-title">${t("update.available")}</h2>
       <p id="update-version"></p>
@@ -744,10 +766,96 @@ async function checkForUpdates(manual: boolean): Promise<void> {
 function showUpdateDialog(update: UpdateInfo): void {
   setText("#update-title", `DisplayMux ${update.version ?? ""}`);
   setText("#update-version", t("update.currentVersion", { version: update.currentVersion }));
-  setText("#update-notes", update.notes?.trim() || t("update.noneNotes"));
+  const notes = document.querySelector<HTMLElement>("#update-notes");
+  if (notes) renderMarkdown(notes, update.notes?.trim() || t("update.noneNotes"));
   const overlay = document.querySelector("#update-overlay");
   overlay?.classList.add("is-visible");
   overlay?.setAttribute("aria-hidden", "false");
+}
+
+function appendInlineMarkdown(parent: HTMLElement, source: string): void {
+  const pattern = /(\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)\*)/g;
+  let cursor = 0;
+
+  for (const match of source.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    parent.append(document.createTextNode(source.slice(cursor, index)));
+    if (match[2] && match[3]) {
+      try {
+        const url = new URL(match[3]);
+        if (url.protocol !== "https:") throw new Error("unsupported Markdown link protocol");
+        const link = document.createElement("a");
+        link.href = url.href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = match[2];
+        parent.append(link);
+      } catch {
+        parent.append(document.createTextNode(match[0]));
+      }
+    } else if (match[4]) {
+      const strong = document.createElement("strong");
+      strong.textContent = match[4];
+      parent.append(strong);
+    } else if (match[5]) {
+      const code = document.createElement("code");
+      code.textContent = match[5];
+      parent.append(code);
+    } else if (match[6]) {
+      const emphasis = document.createElement("em");
+      emphasis.textContent = match[6];
+      parent.append(emphasis);
+    }
+    cursor = index + match[0].length;
+  }
+  parent.append(document.createTextNode(source.slice(cursor)));
+}
+
+function renderMarkdown(container: HTMLElement, source: string): void {
+  container.replaceChildren();
+  let list: HTMLUListElement | HTMLOListElement | null = null;
+
+  for (const rawLine of source.replace(/\r\n?/g, "\n").split("\n")) {
+    const line = rawLine.trim();
+    if (!line) {
+      list = null;
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+    if (heading) {
+      list = null;
+      const element = document.createElement(`h${heading[1].length}`) as HTMLHeadingElement;
+      appendInlineMarkdown(element, heading[2]);
+      container.append(element);
+      continue;
+    }
+
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(line)) {
+      list = null;
+      container.append(document.createElement("hr"));
+      continue;
+    }
+
+    const listItem = /^(?:([-*+])|(\d+)\.)\s+(.+)$/.exec(line);
+    if (listItem) {
+      const tagName = listItem[2] ? "OL" : "UL";
+      if (!list || list.tagName !== tagName) {
+        list = document.createElement(tagName.toLowerCase()) as HTMLUListElement | HTMLOListElement;
+        container.append(list);
+      }
+      const item = document.createElement("li");
+      appendInlineMarkdown(item, listItem[3]);
+      list.append(item);
+      continue;
+    }
+
+    list = null;
+    const quote = /^>\s?(.*)$/.exec(line);
+    const element = document.createElement(quote ? "blockquote" : "p");
+    appendInlineMarkdown(element, quote?.[1] ?? line);
+    container.append(element);
+  }
 }
 
 function hideUpdateDialog(): void {
