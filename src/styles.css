@@ -1465,7 +1465,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .onboarding-status.is-ready { border-color: var(--accent-border); background: var(--accent-light); color: var(--accent); }
 .onboarding-status strong { font-size: 12px; }
 .onboarding-status span { color: var(--muted); font-size: 11px; line-height: 1.5; }
-.onboarding-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+.onboarding-actions { display: flex; justify-content: center; gap: 9px; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
 .onboarding-actions button { min-width: 96px; height: 38px; }
 .onboarding-actions button[hidden] { display: none; }
 
