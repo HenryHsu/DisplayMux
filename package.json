@@ -15,7 +15,7 @@
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-global-shortcut": "^2.3.2",
     "@tauri-apps/plugin-opener": "^2.5.5",
-    "lucide": "^0.544.0"
+    "lucide": "^1.44.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4",
