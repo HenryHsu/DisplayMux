@@ -1546,30 +1546,40 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                             }
                         }
                         AgentAction::WakeDisplay => {
-                            match tauri::async_runtime::spawn_blocking(wake_local_display).await {
-                                Ok(Ok(())) => AgentResponse {
-                                    ready: true,
-                                    message: ui_text("顯示輸出已喚醒", "Display output activated")
+                            #[cfg(target_os = "macos")]
+                            let wake_result = start_local_display_wake().map(Some);
+                            #[cfg(not(target_os = "macos"))]
+                            let wake_result: Result<Option<std::process::Child>, String> = Ok(None);
+                            match wake_result {
+                                Ok(child) => {
+                                    if let Some(mut child) = child {
+                                        tauri::async_runtime::spawn_blocking(move || {
+                                            match child.wait() {
+                                                Ok(status) if !status.success() => {
+                                                    tracing::warn!(%status, "macOS display wake assertion ended unsuccessfully");
+                                                }
+                                                Err(error) => {
+                                                    tracing::warn!(error = %error, "unable to reap macOS display wake assertion");
+                                                }
+                                                _ => {}
+                                            }
+                                        });
+                                    }
+                                    AgentResponse {
+                                        ready: true,
+                                        message: ui_text(
+                                            "顯示輸出已喚醒",
+                                            "Display output activated",
+                                        )
                                         .to_owned(),
-                                    display_route: None,
-                                },
-                                Ok(Err(message)) => AgentResponse {
+                                        display_route: None,
+                                    }
+                                }
+                                Err(message) => AgentResponse {
                                     ready: false,
                                     message,
                                     display_route: None,
-                                },
-                                Err(error) => AgentResponse {
-                                    ready: false,
-                                    message: match UiLocale::current() {
-                                        UiLocale::TraditionalChinese => {
-                                            format!("顯示喚醒工作無法執行：{error}")
-                                        }
-                                        UiLocale::English => {
-                                            format!("The display wake task could not run: {error}")
-                                        }
-                                    },
-                                    display_route: None,
-                                },
+                                }
                             }
                         }
                         AgentAction::SwitchInput { input } => {
@@ -2221,21 +2231,11 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn wake_local_display() -> Result<(), String> {
-    let status = std::process::Command::new("/usr/bin/caffeinate")
-        .args(["-u", "-t", "1"])
-        .status()
-        .map_err(|error| format!("無法啟動 macOS 顯示喚醒程序：{error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("macOS 顯示喚醒程序結束，狀態為 {status}"))
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn wake_local_display() -> Result<(), String> {
-    Ok(())
+fn start_local_display_wake() -> Result<std::process::Child, String> {
+    std::process::Command::new("/usr/bin/caffeinate")
+        .args(["-u", "-d", "-t", "30"])
+        .spawn()
+        .map_err(|error| format!("無法啟動 macOS 顯示喚醒程序：{error}"))
 }
 
 #[cfg(test)]
