@@ -23,5 +23,5 @@ windows-sys.workspace = true
 wmi.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-ddc = "0.2.2"
+ddc = "0.3.0"
 ddc-macos = "0.2.2"
