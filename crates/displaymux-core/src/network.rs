@@ -323,6 +323,12 @@ pub enum AgentAction {
     SwitchInput { input: DisplayInput },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentErrorCode {
+    DisplayWakeFailed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRequest {
     pub timestamp_seconds: u64,
@@ -369,6 +375,8 @@ impl AgentRequest {
 pub struct AgentResponse {
     pub ready: bool,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<AgentErrorCode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_route: Option<AgentDisplayRoute>,
 }
@@ -545,6 +553,7 @@ fn rejection_response(error: &DisplayMuxError) -> AgentResponse {
     AgentResponse {
         ready: false,
         message: message.to_owned(),
+        error_code: None,
         display_route: None,
     }
 }
@@ -674,7 +683,14 @@ mod tests {
         let response: AgentResponse =
             serde_json::from_str(r#"{"ready":true,"message":"ready"}"#).unwrap();
         assert!(response.ready);
+        assert_eq!(response.error_code, None);
         assert!(response.display_route.is_none());
+    }
+
+    #[test]
+    fn display_wake_error_code_has_stable_wire_format() {
+        let json = serde_json::to_string(&AgentErrorCode::DisplayWakeFailed).unwrap();
+        assert_eq!(json, r#""display_wake_failed""#);
     }
 
     #[tokio::test]

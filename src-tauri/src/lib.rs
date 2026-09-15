@@ -11,11 +11,11 @@ use std::{
 };
 
 use displaymux_core::{
-    AgentAction, AgentClient, AgentDisplayRoute, AgentResponse, AgentServer, DestinationHost,
-    DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile, DisplayMuxService,
-    MacAddress, MdnsPeerDiscovery, MonitorControl, MonitorDescriptor, MonitorFingerprint,
-    PeerDiscovery, PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome, WakeTarget,
-    DEFAULT_AGENT_PORT,
+    AgentAction, AgentClient, AgentDisplayRoute, AgentErrorCode, AgentResponse, AgentServer,
+    DestinationHost, DiscoveredPeer, DisplayInput, DisplayMuxError, DisplayMuxProfile,
+    DisplayMuxService, MacAddress, MdnsPeerDiscovery, MonitorControl, MonitorDescriptor,
+    MonitorFingerprint, PeerDiscovery, PeerEndpoint, ResolutionSource, SwitchMode, SwitchOutcome,
+    WakeTarget, DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
@@ -23,6 +23,8 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_updater::UpdaterExt;
 use tokio::{sync::Mutex, time::sleep};
+
+mod messages;
 
 static NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static UI_LOCALE: AtomicU64 = AtomicU64::new(0);
@@ -63,6 +65,10 @@ fn ui_text(zh_tw: &'static str, en: &'static str) -> &'static str {
         UiLocale::TraditionalChinese => zh_tw,
         UiLocale::English => en,
     }
+}
+
+fn backend_message(key: &str) -> String {
+    messages::get(UiLocale::current() == UiLocale::TraditionalChinese, key)
 }
 
 fn localized_input_name(input: DisplayInput) -> String {
@@ -1093,15 +1099,11 @@ async fn prepare_peer_display(
     });
     request_peer(settings, peer, AgentAction::WakeDisplay)
         .await
-        .map_err(|error| match UiLocale::current() {
-            UiLocale::TraditionalChinese => format!(
-                "{} 的 Agent 已連線，但無法喚醒顯示輸出：{}。為避免黑畫面，尚未切換螢幕輸入。",
-                peer.name, error
-            ),
-            UiLocale::English => format!(
-                "The Agent on {} is online but could not wake its display output: {}. The monitor input was not changed to avoid a blank screen.",
-                peer.name, error
-            ),
+        .map_err(|error| {
+            messages::render(
+                &backend_message("backend.peerDisplayWakeFailed"),
+                &[("peer", peer.name.as_str()), ("error", error.as_str())],
+            )
         })?;
     sleep(Duration::from_secs(2)).await;
     Ok(())
@@ -1152,7 +1154,10 @@ async fn request_peer(
     if response.ready {
         Ok(response)
     } else {
-        Err(response.message)
+        Err(match response.error_code {
+            Some(AgentErrorCode::DisplayWakeFailed) => backend_message("backend.displayWakeFailed"),
+            None => response.message,
+        })
     }
 }
 
@@ -1542,6 +1547,7 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                     "DisplayMux Agent is ready",
                                 )
                                 .to_owned(),
+                                error_code: None,
                                 display_route,
                             }
                         }
@@ -1549,7 +1555,7 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                             #[cfg(target_os = "macos")]
                             let wake_result = start_local_display_wake().map(Some);
                             #[cfg(not(target_os = "macos"))]
-                            let wake_result: Result<Option<std::process::Child>, String> = Ok(None);
+                            let wake_result: std::io::Result<Option<std::process::Child>> = Ok(None);
                             match wake_result {
                                 Ok(child) => {
                                     if let Some(mut child) = child {
@@ -1567,18 +1573,19 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                     }
                                     AgentResponse {
                                         ready: true,
-                                        message: ui_text(
-                                            "顯示輸出已喚醒",
-                                            "Display output activated",
-                                        )
-                                        .to_owned(),
+                                        message: "display_output_activated".to_owned(),
+                                        error_code: None,
                                         display_route: None,
                                     }
                                 }
-                                Err(message) => AgentResponse {
-                                    ready: false,
-                                    message,
-                                    display_route: None,
+                                Err(error) => {
+                                    tracing::warn!(error = %error, "unable to start macOS display wake assertion");
+                                    AgentResponse {
+                                        ready: false,
+                                        message: "display_wake_failed".to_owned(),
+                                        error_code: Some(AgentErrorCode::DisplayWakeFailed),
+                                        display_route: None,
+                                    }
                                 }
                             }
                         }
@@ -1597,6 +1604,7 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                         "No shared display is selected on this host",
                                     )
                                     .to_owned(),
+                                    error_code: None,
                                     display_route: None,
                                 };
                             };
@@ -1617,11 +1625,13 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                             localized_input_name(input)
                                         ),
                                     },
+                                    error_code: None,
                                     display_route: None,
                                 },
                                 Ok(Err(error)) => AgentResponse {
                                     ready: false,
                                     message: core_user_error(error),
+                                    error_code: None,
                                     display_route: None,
                                 },
                                 Err(error) => AgentResponse {
@@ -1634,6 +1644,7 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                             format!("The switching task could not run: {error}")
                                         }
                                     },
+                                    error_code: None,
                                     display_route: None,
                                 },
                             }
@@ -2231,11 +2242,10 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn start_local_display_wake() -> Result<std::process::Child, String> {
+fn start_local_display_wake() -> std::io::Result<std::process::Child> {
     std::process::Command::new("/usr/bin/caffeinate")
         .args(["-u", "-d", "-t", "30"])
         .spawn()
-        .map_err(|error| format!("無法啟動 macOS 顯示喚醒程序：{error}"))
 }
 
 #[cfg(test)]

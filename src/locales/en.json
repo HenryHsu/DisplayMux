@@ -1,4 +1,4 @@
-const en = {
+{
   "app.rootMissing": "DisplayMux application root was not found",
   "nav.aria": "Primary navigation",
   "nav.dashboard": "Switch Center",
@@ -110,6 +110,8 @@ const en = {
   "switcher.waking": "Waking {name}.",
   "switcher.waiting": "Waiting up to {seconds} seconds for {name}.",
   "switcher.activatingDisplay": "Waking the display output on {name}.",
+  "backend.displayWakeFailed": "The Mac could not activate its display output",
+  "backend.peerDisplayWakeFailed": "The Agent on {peer} is online but could not wake its display output: {error}. The monitor input was not changed to avoid a blank screen.",
   "switcher.remoteFallback": "Asking {name} to perform the switch.",
   "switcher.switching": "Changing the shared display input.",
   "switcher.failed": "Unable to switch",
@@ -245,7 +247,5 @@ const en = {
   "toast.installFailed": "Update was not installed",
   "toast.onboardingFailed": "Unable to save setup guide status",
   "toast.openLinkFailed": "Unable to open link",
-  "preview.monitorStatus": "Select a shared display on the settings page",
-} as const;
-
-export default en;
+  "preview.monitorStatus": "Select a shared display on the settings page"
+}

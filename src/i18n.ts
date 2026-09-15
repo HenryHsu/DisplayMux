@@ -1,5 +1,5 @@
-import en from "./locales/en";
-import zhTW from "./locales/zh-TW";
+import en from "./locales/en.json";
+import zhTW from "./locales/zh-TW.json";
 
 export type AppLocale = "en" | "zh-TW";
 export type LocalePreference = "system" | AppLocale;
