@@ -1944,7 +1944,7 @@ fn hide_main_window(window: &tauri::Window) {
         tracing::warn!(error = %error, "unable to remove DisplayMux from the taskbar");
     }
     if let Err(error) = window.hide() {
-        tracing::warn!(error = %error, "unable to hide DisplayMux in the system tray");
+        tracing::warn!(error = %error, "unable to hide the DisplayMux main window");
     }
 }
 
@@ -1968,7 +1968,7 @@ fn show_main_window(app: &AppHandle) {
         tracing::warn!(error = %error, "unable to restore DisplayMux to the taskbar");
     }
     if let Err(error) = window.show() {
-        tracing::warn!(error = %error, "unable to show DisplayMux from the system tray");
+        tracing::warn!(error = %error, "unable to show the DisplayMux main window");
     }
     if let Err(error) = window.unminimize() {
         tracing::warn!(error = %error, "unable to unminimize DisplayMux");
@@ -2066,7 +2066,7 @@ pub fn run() -> anyhow::Result<()> {
         }
         _ => {}
     });
-    builder
+    let app = builder
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -2150,8 +2150,15 @@ pub fn run() -> anyhow::Result<()> {
             wake_peer,
             switch_host
         ])
-        .run(tauri::generate_context!())
-        .map_err(anyhow::Error::from)
+        .build(tauri::generate_context!())
+        .map_err(anyhow::Error::from)?;
+    app.run(|_app, _event| {
+        #[cfg(target_os = "macos")]
+        if matches!(_event, tauri::RunEvent::Reopen { .. }) {
+            show_main_window(_app);
+        }
+    });
+    Ok(())
 }
 
 #[cfg(test)]
