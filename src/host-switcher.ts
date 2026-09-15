@@ -9,6 +9,7 @@ type SwitchProgressEvent =
   | { event: "waking"; peerName: string }
   | { event: "checking"; peerName: string }
   | { event: "waiting"; peerName: string; seconds: number }
+  | { event: "activatingDisplay"; peerName: string }
   | { event: "switching" }
   | { event: "remoteFallback"; peerName: string };
 
@@ -112,6 +113,8 @@ async function switchToSelected(): Promise<void> {
       ? t("switcher.waking", { name: event.peerName })
       : event.event === "waiting"
         ? t("switcher.waiting", { name: event.peerName, seconds: event.seconds })
+        : event.event === "activatingDisplay"
+          ? t("switcher.activatingDisplay", { name: event.peerName })
         : event.event === "remoteFallback"
           ? t("switcher.remoteFallback", { name: event.peerName })
           : t("switcher.switching");

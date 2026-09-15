@@ -37,7 +37,7 @@ const zhTW: Record<keyof typeof en, string> = {
   "switcher.title": "切換共用螢幕", "switcher.noDisplay": "尚未選擇共用螢幕", "switcher.hostListAria": "可選擇的主機",
   "switcher.inputUnset": "尚未設定輸入", "switcher.local": "這台裝置", "switcher.select": "選取", "switcher.noHosts": "目前沒有可用的已設定主機",
   "switcher.navigationHint": "Tab 或上下方向鍵移動，Enter 選取", "switcher.closeHint": "Esc 關閉", "switcher.preparing": "正在準備切換",
-  "switcher.preparingDetail": "正在確認最安全的可用切換路徑。", "switcher.waking": "正在喚醒 {name}。", "switcher.waiting": "最多等待 {seconds} 秒，確認 {name} 是否就緒。",
+  "switcher.preparingDetail": "正在確認最安全的可用切換路徑。", "switcher.waking": "正在喚醒 {name}。", "switcher.waiting": "最多等待 {seconds} 秒，確認 {name} 是否就緒。", "switcher.activatingDisplay": "正在喚醒 {name} 的顯示輸出。",
   "switcher.remoteFallback": "正在請求 {name} 代為切換。", "switcher.switching": "正在變更共用螢幕輸入。", "switcher.failed": "無法切換",
   "switcher.previewDisplay": "共用螢幕預覽", "switcher.previewWindows": "這台 Windows 電腦", "switcher.previewMac": "工作用 Mac mini",
   "help.heading": "設定與切換重點", "help.replaceTitle": "選擇共用螢幕", "help.replaceBody": "選擇要共用的螢幕後，DisplayMux 會自動讀取並保存這台電腦目前使用的 Port；一般情況下不需要手動設定。",

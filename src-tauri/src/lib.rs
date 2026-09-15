@@ -312,6 +312,7 @@ enum SwitchProgress {
     Waking { peer_name: String },
     Checking { peer_name: String },
     Waiting { peer_name: String, seconds: u64 },
+    ActivatingDisplay { peer_name: String },
     Switching,
     RemoteFallback { peer_name: String },
 }
@@ -896,7 +897,7 @@ async fn switch_host(
         })?
     };
     let preparation = match target {
-        Some(peer) => prepare_automatic_switch(&settings, peer, &on_event).await,
+        Some(peer) => prepare_automatic_switch(&settings, peer, &on_event).await?,
         None => NetworkPreparation::NotRequired,
     };
     let _ = on_event.send(SwitchProgress::Switching);
@@ -1026,7 +1027,7 @@ async fn prepare_automatic_switch(
     settings: &AppSettings,
     peer: &HostRoute,
     on_event: &Channel<SwitchProgress>,
-) -> NetworkPreparation {
+) -> Result<NetworkPreparation, String> {
     let _ = on_event.send(SwitchProgress::Waking {
         peer_name: peer.name.clone(),
     });
@@ -1037,29 +1038,30 @@ async fn prepare_automatic_switch(
         peer_name: peer.name.clone(),
     });
     if !has_valid_shared_key(&settings.shared_key) {
-        return NetworkPreparation::Unavailable {
+        return Ok(NetworkPreparation::Unavailable {
             wake_sent,
             reason: match UiLocale::current() {
                 UiLocale::TraditionalChinese => format!("網路 Agent 尚未設定至少 {MIN_SHARED_KEY_LENGTH} 個字元的配對密碼"),
                 UiLocale::English => format!("The network Agent does not have a pairing password of at least {MIN_SHARED_KEY_LENGTH} characters"),
             },
-        };
+        });
     }
     if request_peer(settings, peer, AgentAction::Ping)
         .await
         .is_ok()
     {
-        return NetworkPreparation::Ready { wake_sent };
+        prepare_peer_display(settings, peer, on_event).await?;
+        return Ok(NetworkPreparation::Ready { wake_sent });
     }
 
     if let Err(wake_error) = wake_result {
-        return NetworkPreparation::Unavailable {
+        return Ok(NetworkPreparation::Unavailable {
             wake_sent: false,
             reason: match UiLocale::current() {
                 UiLocale::TraditionalChinese => format!("{}，且 Agent 目前沒有回應", wake_error),
                 UiLocale::English => format!("{wake_error}, and the Agent is not responding"),
             },
-        };
+        });
     }
 
     let _ = on_event.send(SwitchProgress::Waiting {
@@ -1067,12 +1069,42 @@ async fn prepare_automatic_switch(
         seconds: settings.wait_seconds.clamp(5, 120),
     });
     match wait_until_peer_ready(settings, peer).await {
-        Ok(()) => NetworkPreparation::Ready { wake_sent: true },
-        Err(reason) => NetworkPreparation::Unavailable {
+        Ok(()) => {
+            prepare_peer_display(settings, peer, on_event).await?;
+            Ok(NetworkPreparation::Ready { wake_sent: true })
+        }
+        Err(reason) => Ok(NetworkPreparation::Unavailable {
             wake_sent: true,
             reason,
-        },
+        }),
     }
+}
+
+async fn prepare_peer_display(
+    settings: &AppSettings,
+    peer: &HostRoute,
+    on_event: &Channel<SwitchProgress>,
+) -> Result<(), String> {
+    if peer.platform != DestinationHost::Mac {
+        return Ok(());
+    }
+    let _ = on_event.send(SwitchProgress::ActivatingDisplay {
+        peer_name: peer.name.clone(),
+    });
+    request_peer(settings, peer, AgentAction::WakeDisplay)
+        .await
+        .map_err(|error| match UiLocale::current() {
+            UiLocale::TraditionalChinese => format!(
+                "{} 的 Agent 已連線，但無法喚醒顯示輸出：{}。為避免黑畫面，尚未切換螢幕輸入。",
+                peer.name, error
+            ),
+            UiLocale::English => format!(
+                "The Agent on {} is online but could not wake its display output: {}. The monitor input was not changed to avoid a blank screen.",
+                peer.name, error
+            ),
+        })?;
+    sleep(Duration::from_secs(2)).await;
+    Ok(())
 }
 
 async fn wait_until_peer_ready(settings: &AppSettings, peer: &HostRoute) -> Result<(), String> {
@@ -1511,6 +1543,33 @@ async fn restart_agent(state: &AppRuntime) -> Result<(), String> {
                                 )
                                 .to_owned(),
                                 display_route,
+                            }
+                        }
+                        AgentAction::WakeDisplay => {
+                            match tauri::async_runtime::spawn_blocking(wake_local_display).await {
+                                Ok(Ok(())) => AgentResponse {
+                                    ready: true,
+                                    message: ui_text("顯示輸出已喚醒", "Display output activated")
+                                        .to_owned(),
+                                    display_route: None,
+                                },
+                                Ok(Err(message)) => AgentResponse {
+                                    ready: false,
+                                    message,
+                                    display_route: None,
+                                },
+                                Err(error) => AgentResponse {
+                                    ready: false,
+                                    message: match UiLocale::current() {
+                                        UiLocale::TraditionalChinese => {
+                                            format!("顯示喚醒工作無法執行：{error}")
+                                        }
+                                        UiLocale::English => {
+                                            format!("The display wake task could not run: {error}")
+                                        }
+                                    },
+                                    display_route: None,
+                                },
                             }
                         }
                         AgentAction::SwitchInput { input } => {
@@ -2158,6 +2217,24 @@ pub fn run() -> anyhow::Result<()> {
             show_main_window(_app);
         }
     });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn wake_local_display() -> Result<(), String> {
+    let status = std::process::Command::new("/usr/bin/caffeinate")
+        .args(["-u", "-t", "1"])
+        .status()
+        .map_err(|error| format!("無法啟動 macOS 顯示喚醒程序：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("macOS 顯示喚醒程序結束，狀態為 {status}"))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn wake_local_display() -> Result<(), String> {
     Ok(())
 }
 

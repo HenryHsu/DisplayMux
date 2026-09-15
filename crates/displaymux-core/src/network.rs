@@ -319,6 +319,7 @@ impl PeerEndpoint {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentAction {
     Ping,
+    WakeDisplay,
     SwitchInput { input: DisplayInput },
 }
 
@@ -399,6 +400,11 @@ impl AgentClient {
         action: AgentAction,
         nonce: impl Into<String>,
     ) -> Result<AgentResponse, DisplayMuxError> {
+        let response_timeout = if matches!(&action, AgentAction::WakeDisplay) {
+            Duration::from_secs(5)
+        } else {
+            self.connect_timeout
+        };
         let request = AgentRequest::signed(action, nonce, &self.shared_key)?;
         let stream = timeout(
             self.connect_timeout,
@@ -418,7 +424,7 @@ impl AgentClient {
 
         let mut response = String::new();
         timeout(
-            self.connect_timeout,
+            response_timeout,
             BufReader::new(reader).read_line(&mut response),
         )
         .await
@@ -634,6 +640,17 @@ mod tests {
         assert_eq!(
             request.verify(key),
             Err(DisplayMuxError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn wake_display_action_has_a_stable_wire_format() {
+        let payload = serde_json::to_string(&AgentAction::WakeDisplay).unwrap();
+
+        assert_eq!(payload, r#"{"type":"wake_display"}"#);
+        assert_eq!(
+            serde_json::from_str::<AgentAction>(&payload).unwrap(),
+            AgentAction::WakeDisplay
         );
     }
 

@@ -109,6 +109,7 @@ const en = {
   "switcher.preparingDetail": "Checking the safest available switching path.",
   "switcher.waking": "Waking {name}.",
   "switcher.waiting": "Waiting up to {seconds} seconds for {name}.",
+  "switcher.activatingDisplay": "Waking the display output on {name}.",
   "switcher.remoteFallback": "Asking {name} to perform the switch.",
   "switcher.switching": "Changing the shared display input.",
   "switcher.failed": "Unable to switch",
