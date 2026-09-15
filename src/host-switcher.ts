@@ -1,5 +1,6 @@
 import "@fontsource-variable/manrope";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { locale, t } from "./i18n";
 import "./host-switcher.css";
 
@@ -36,6 +37,7 @@ if (!root) throw new Error("DisplayMux host switcher root was not found");
 let state: HostSwitcherState = { sharedMonitorName: null, hosts: [] };
 let selectedIndex = 0;
 let switching = false;
+let hideTimer: number | null = null;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({
@@ -118,7 +120,10 @@ async function switchToSelected(): Promise<void> {
   try {
     const result = await invoke<OperationResult>("switch_host", { targetId: host.id, onEvent });
     render({ title: result.title, detail: result.detail });
-    window.setTimeout(() => void hideSwitcher(), 450);
+    hideTimer = window.setTimeout(() => {
+      hideTimer = null;
+      void hideSwitcher();
+    }, 450);
   } catch (error) {
     switching = false;
     render({ title: t("switcher.failed"), detail: String(error), error: true });
@@ -153,6 +158,12 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function initialize(): Promise<void> {
+  if (hideTimer !== null) {
+    window.clearTimeout(hideTimer);
+    hideTimer = null;
+  }
+  switching = false;
+  render();
   try {
     await invoke("set_locale", { locale });
     state = await invoke<HostSwitcherState>("get_host_switcher_state");
@@ -169,4 +180,13 @@ async function initialize(): Promise<void> {
   render();
 }
 
-void initialize();
+async function bootstrap(): Promise<void> {
+  try {
+    await listen("host-switcher-shown", () => void initialize());
+  } catch {
+    // Browser previews do not expose Tauri's event API.
+  }
+  await initialize();
+}
+
+void bootstrap();

@@ -18,7 +18,7 @@ use displaymux_core::{
     DEFAULT_AGENT_PORT,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{ipc::Channel, AppHandle, Manager, State};
+use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_updater::UpdaterExt;
@@ -1405,6 +1405,9 @@ fn show_host_switcher(app: &AppHandle) {
     }
     if let Err(error) = window.set_focus() {
         tracing::warn!(error = %error, "unable to focus the host switcher window");
+    }
+    if let Err(error) = window.emit("host-switcher-shown", ()) {
+        tracing::warn!(error = %error, "unable to refresh the host switcher window");
     }
 }
 
